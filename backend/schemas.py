@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 Role = Literal["owner", "admin", "manager", "staff"]
@@ -88,6 +88,37 @@ class InvitationView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SiteFields(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    address: str = Field(default="", max_length=240)
+    city: str = Field(default="", max_length=100)
+    state: str = Field(min_length=2, max_length=80)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def coordinates_are_a_pair(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Enter both latitude and longitude to place a map pin.")
+        return self
+
+
+class SiteCreate(SiteFields):
+    pass
+
+
+class SiteUpdate(SiteFields):
+    pass
+
+
+class SiteView(SiteFields):
+    id: int
+    has_schematic: bool = False
+    schematic_filename: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class MemberView(BaseModel):
     id: int
     role: Role
@@ -138,10 +169,15 @@ class Schedule(ScheduleBase):
 class RoomBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     block: str = Field(min_length=1, max_length=120)
+    site_id: Optional[int] = Field(default=None, gt=0)
 
 
 class RoomCreate(RoomBase):
     pass
+
+
+class RoomSiteUpdate(BaseModel):
+    site_id: int = Field(gt=0)
 
 
 class Room(RoomBase):

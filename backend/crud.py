@@ -27,9 +27,37 @@ def get_rooms(db: Session, organization_id: int, skip: int = 0, limit: int = 100
     )
 
 
+def get_site(db: Session, site_id: int, organization_id: int):
+    return db.query(models.Site).filter(
+        models.Site.id == site_id,
+        models.Site.organization_id == organization_id,
+    ).first()
+
+
+def get_sites(db: Session, organization_id: int):
+    return (
+        db.query(models.Site)
+        .filter(models.Site.organization_id == organization_id)
+        .order_by(models.Site.name)
+        .all()
+    )
+
+
 def create_room(db: Session, room: schemas.RoomCreate, organization_id: int):
+    site_id = room.site_id
+    if site_id is not None and not get_site(db, site_id, organization_id):
+        raise ValueError("Choose a location in this organization.")
+    if site_id is None:
+        default_site = (
+            db.query(models.Site)
+            .filter(models.Site.organization_id == organization_id)
+            .order_by(models.Site.id)
+            .first()
+        )
+        site_id = default_site.id if default_site else None
     db_room = models.Room(
         organization_id=organization_id,
+        site_id=site_id,
         name=room.name.strip(),
         block=room.block.strip(),
     )

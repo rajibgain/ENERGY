@@ -33,6 +33,17 @@ export const fetchCampusDashboard = async (organization = {}) => (await API.get(
   operating_hours: organization.operatingHours,
 } })).data;
 export const fetchRooms = async () => (await API.get('/rooms/')).data;
+export const fetchSites = async () => (await API.get('/sites/')).data;
+export const createSite = async (payload) => (await API.post('/sites/', payload)).data;
+export const updateSite = async (id, payload) => (await API.patch(`/sites/${id}/`, payload)).data;
+export const uploadSiteSchematic = async (id, file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return (await API.post(`/sites/${id}/schematic/`, formData)).data;
+};
+export const fetchSiteSchematic = async (id) => (await API.get(`/sites/${id}/schematic/`, { responseType: 'blob' })).data;
+export const clearSiteSchematic = async (id) => (await API.delete(`/sites/${id}/schematic/`)).data;
+export const moveRoomToSite = async (roomId, siteId) => (await API.patch(`/rooms/${roomId}/site/`, { site_id: siteId })).data;
 export const fetchRoomAnalysis = async (roomId, organization = {}) => (await API.get(`/rooms/${roomId}/waste-analysis/`, { params: {
   tariff_rate: organization.tariffRate,
   carbon_factor: organization.carbonFactor,

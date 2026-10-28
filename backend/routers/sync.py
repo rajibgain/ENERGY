@@ -1,8 +1,10 @@
 import csv
 import io
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -15,6 +17,32 @@ from database import get_db
 
 
 router = APIRouter(prefix="/api/v1", tags=["Facilities & electricity records"])
+MAX_SCHEMATIC_BYTES = 10 * 1024 * 1024
+
+
+def _read_schematic(file: UploadFile):
+    filename = (file.filename or "").replace("\\", "/")
+    extension = Path(filename).suffix.lower()
+    formats = {
+        ".png": ("image/png", lambda content: content.startswith(b"\x89PNG\r\n\x1a\n")),
+        ".jpg": ("image/jpeg", lambda content: content.startswith(b"\xff\xd8\xff")),
+        ".jpeg": ("image/jpeg", lambda content: content.startswith(b"\xff\xd8\xff")),
+        ".webp": ("image/webp", lambda content: len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP"),
+        ".pdf": ("application/pdf", lambda content: content.startswith(b"%PDF-")),
+    }
+    if extension not in formats:
+        raise HTTPException(status_code=415, detail="Upload a PNG, JPG, WEBP or PDF building schematic.")
+    content = file.file.read(MAX_SCHEMATIC_BYTES + 1)
+    if len(content) > MAX_SCHEMATIC_BYTES:
+        raise HTTPException(status_code=413, detail="Building schematics must be 10 MB or smaller.")
+    content_type, matches_signature = formats[extension]
+    if not matches_signature(content):
+        raise HTTPException(status_code=415, detail="This file does not match its image or PDF type.")
+    safe_name = "".join(
+        char for char in Path(filename).name
+        if char.isascii() and (char.isalnum() or char in " ._-")
+    )[:120] or f"building-schematic{extension}"
+    return content, content_type, safe_name
 
 
 @router.post("/rooms/", response_model=schemas.Room, status_code=201)
@@ -23,6 +51,8 @@ def create_room(
     context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
     db: Session = Depends(get_db),
 ):
+    if room.site_id is not None and not crud.get_site(db, room.site_id, context.organization.id):
+        raise HTTPException(status_code=404, detail="Location not found in this organization.")
     return crud.create_room(db=db, room=room, organization_id=context.organization.id)
 
 
@@ -34,6 +64,122 @@ def read_rooms(
     db: Session = Depends(get_db),
 ):
     return crud.get_rooms(db, organization_id=context.organization.id, skip=skip, limit=limit)
+
+
+@router.get("/sites/", response_model=List[schemas.SiteView])
+def read_sites(
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager", "staff")),
+    db: Session = Depends(get_db),
+):
+    return crud.get_sites(db, organization_id=context.organization.id)
+
+
+@router.post("/sites/", response_model=schemas.SiteView, status_code=201)
+def create_site(
+    site: schemas.SiteCreate,
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    saved = models.Site(
+        organization_id=context.organization.id,
+        **site.model_dump(),
+    )
+    db.add(saved)
+    db.commit()
+    db.refresh(saved)
+    return saved
+
+
+@router.patch("/sites/{site_id}/", response_model=schemas.SiteView)
+def update_site(
+    site_id: int,
+    changes: schemas.SiteUpdate,
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    saved = crud.get_site(db, site_id, context.organization.id)
+    if not saved:
+        raise HTTPException(status_code=404, detail="Location not found in this organization.")
+    for key, value in changes.model_dump(exclude_unset=True).items():
+        setattr(saved, key, value)
+    db.commit()
+    db.refresh(saved)
+    return saved
+
+
+@router.post("/sites/{site_id}/schematic/", response_model=schemas.SiteView)
+def upload_site_schematic(
+    site_id: int,
+    file: UploadFile = File(...),
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    site = crud.get_site(db, site_id, context.organization.id)
+    if not site:
+        raise HTTPException(status_code=404, detail="Location not found in this organization.")
+    content, content_type, filename = _read_schematic(file)
+    site.schematic_data = content
+    site.schematic_content_type = content_type
+    site.schematic_filename = filename
+    db.commit()
+    db.refresh(site)
+    return site
+
+
+@router.get("/sites/{site_id}/schematic/")
+def read_site_schematic(
+    site_id: int,
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager", "staff")),
+    db: Session = Depends(get_db),
+):
+    site = crud.get_site(db, site_id, context.organization.id)
+    if not site or not site.schematic_data:
+        raise HTTPException(status_code=404, detail="No schematic is saved for this location.")
+    filename = (site.schematic_filename or "building-schematic").replace('"', "").replace("\r", "").replace("\n", "")
+    return Response(
+        content=site.schematic_data,
+        media_type=site.schematic_content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.delete("/sites/{site_id}/schematic/", response_model=schemas.SiteView)
+def delete_site_schematic(
+    site_id: int,
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    site = crud.get_site(db, site_id, context.organization.id)
+    if not site:
+        raise HTTPException(status_code=404, detail="Location not found in this organization.")
+    site.schematic_data = None
+    site.schematic_content_type = None
+    site.schematic_filename = None
+    db.commit()
+    db.refresh(site)
+    return site
+
+
+@router.patch("/rooms/{room_id}/site/", response_model=schemas.Room)
+def move_room_to_site(
+    room_id: int,
+    changes: schemas.RoomSiteUpdate,
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    room = crud.get_room(db, room_id, context.organization.id)
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found in this organization.")
+    if not crud.get_site(db, changes.site_id, context.organization.id):
+        raise HTTPException(status_code=404, detail="Location not found in this organization.")
+    room.site_id = changes.site_id
+    db.commit()
+    return crud.get_room(db, room.id, context.organization.id)
 
 
 @router.post("/rooms/{room_id}/appliances/", response_model=schemas.Appliance, status_code=201)

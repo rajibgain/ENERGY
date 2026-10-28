@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import EnergyWorkspace from './components/EnergyWorkspace';
 import AuthScreen from './components/AuthScreen';
-import { checkBackendHealth, fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, signOut, updateOrganization as saveOrganization } from './services/api';
-import { calculateDemoDashboard, DEMO_BILLS, DEMO_ROOMS, DEMO_SESSION } from './data/demoWorkspace';
+import { checkBackendHealth, clearSiteSchematic as clearSiteSchematicRequest, createSite as createSiteRequest, fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, fetchSites, moveRoomToSite as moveRoomToSiteRequest, signOut, updateOrganization as saveOrganization, updateSite as updateSiteRequest, uploadSiteSchematic as uploadSiteSchematicRequest } from './services/api';
+import { calculateDemoDashboard, DEMO_BILLS, DEMO_ROOMS, DEMO_SESSION, DEMO_SITES } from './data/demoWorkspace';
 
 const EMPTY_DASHBOARD = {
   total_rooms_analyzed: 0,
@@ -29,6 +29,7 @@ export default function App() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [dashboard, setDashboard] = useState(EMPTY_DASHBOARD);
   const [rooms, setRooms] = useState([]);
+  const [sites, setSites] = useState([]);
   const [billRecords, setBillRecords] = useState([]);
   const [isOnline, setIsOnline] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -38,7 +39,8 @@ export default function App() {
 
   const loadDemoData = useCallback((activeOrganization = DEMO_SESSION.organization) => {
     setDashboard(calculateDemoDashboard(DEMO_ROOMS, activeOrganization));
-    setRooms(DEMO_ROOMS);
+    setRooms(DEMO_ROOMS.map((room) => ({ ...room })));
+    setSites(DEMO_SITES.map((site) => ({ ...site })));
     setBillRecords(DEMO_BILLS);
     setIsOnline(false);
     setDataError('');
@@ -69,11 +71,12 @@ export default function App() {
     try {
       await checkBackendHealth();
       const liveOrganization = mapOrganization(session.organization);
-      const requests = [fetchCampusDashboard(liveOrganization), fetchRooms()];
+      const requests = [fetchCampusDashboard(liveOrganization), fetchRooms(), fetchSites()];
       if (role !== 'staff') requests.push(fetchBillRecords());
-      const [dashboardData, roomsData, billsData = []] = await Promise.all(requests);
+      const [dashboardData, roomsData, sitesData, billsData = []] = await Promise.all(requests);
       setDashboard(dashboardData);
       setRooms(roomsData);
+      setSites(sitesData);
       setBillRecords(billsData);
       setIsOnline(true);
     } catch (error) {
@@ -118,12 +121,62 @@ export default function App() {
     setSession((current) => current ? { ...current, organization: updated } : current);
   };
 
+  const handleCreateSite = async (payload) => {
+    const site = isDemo
+      ? { ...payload, id: Date.now(), has_schematic: false, schematic_filename: null }
+      : await createSiteRequest(payload);
+    setSites((current) => [...current, site].sort((a, b) => a.name.localeCompare(b.name)));
+    return site;
+  };
+
+  const handleUpdateSite = async (siteId, payload) => {
+    const updated = isDemo
+      ? { ...sites.find((site) => site.id === siteId), ...payload }
+      : await updateSiteRequest(siteId, payload);
+    setSites((current) => current.map((site) => site.id === siteId ? updated : site));
+    return updated;
+  };
+
+  const handleUploadSchematic = async (siteId, file) => {
+    if (isDemo) {
+      const schematicDataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read this schematic.'));
+        reader.readAsDataURL(file);
+      });
+      const updated = { ...sites.find((site) => site.id === siteId), has_schematic: true, schematic_filename: file.name, schematic_data_url: schematicDataUrl };
+      setSites((current) => current.map((site) => site.id === siteId ? updated : site));
+      return updated;
+    }
+    const updated = await uploadSiteSchematicRequest(siteId, file);
+    setSites((current) => current.map((site) => site.id === siteId ? updated : site));
+    return updated;
+  };
+
+  const handleClearSchematic = async (siteId) => {
+    const updated = isDemo
+      ? { ...sites.find((site) => site.id === siteId), has_schematic: false, schematic_filename: null, schematic_data_url: null }
+      : await clearSiteSchematicRequest(siteId);
+    setSites((current) => current.map((site) => site.id === siteId ? updated : site));
+    return updated;
+  };
+
+  const handleMoveRoom = async (roomId, siteId) => {
+    const updated = isDemo
+      ? { ...rooms.find((room) => room.id === roomId), site_id: Number(siteId) }
+      : await moveRoomToSiteRequest(roomId, siteId);
+    setRooms((current) => current.map((room) => room.id === roomId ? updated : room));
+    return updated;
+  };
+
   const handleLogout = async () => {
     try { if (!session?.isDemo) await signOut(); } finally {
       demoSelected.current = false;
       setSession(null);
       setDashboard(EMPTY_DASHBOARD);
       setRooms([]);
+      setSites([]);
       setBillRecords([]);
       setIsOnline(false);
       setLastUpdated(null);
@@ -147,6 +200,12 @@ export default function App() {
       onRefresh={isDemo ? () => loadDemoData(session.organization) : loadData}
       organization={organization}
       onOrganizationChange={handleOrganizationChange}
+      sites={sites}
+      onCreateSite={handleCreateSite}
+      onUpdateSite={handleUpdateSite}
+      onUploadSchematic={handleUploadSchematic}
+      onClearSchematic={handleClearSchematic}
+      onMoveRoom={handleMoveRoom}
       user={session.user}
       role={role}
       onLogout={handleLogout}

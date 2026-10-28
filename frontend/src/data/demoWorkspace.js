@@ -26,10 +26,36 @@ export const DEMO_SESSION = {
   },
 };
 
+export const DEMO_SITES = [
+  {
+    id: 9501,
+    name: 'North Campus',
+    address: 'Illustrative campus location',
+    city: 'Kharagpur',
+    state: 'West Bengal',
+    latitude: 22.3149,
+    longitude: 87.3105,
+    has_schematic: false,
+    schematic_filename: null,
+  },
+  {
+    id: 9502,
+    name: 'City Innovation Centre',
+    address: 'Illustrative city location',
+    city: 'Kolkata',
+    state: 'West Bengal',
+    latitude: 22.5726,
+    longitude: 88.3639,
+    has_schematic: false,
+    schematic_filename: null,
+  },
+];
+
 export const DEMO_ROOMS = [
   {
     id: 901,
     name: 'Engineering Labs',
+    site_id: 9501,
     block: 'Innovation Block · North Campus',
     appliances: [
       { id: 9011, name: 'Split AC units · 6', power_watts: 24000 },
@@ -41,6 +67,7 @@ export const DEMO_ROOMS = [
   {
     id: 902,
     name: 'Library & Learning Commons',
+    site_id: 9501,
     block: 'Knowledge Block · North Campus',
     appliances: [
       { id: 9021, name: 'Central air conditioning', power_watts: 18500 },
@@ -52,6 +79,7 @@ export const DEMO_ROOMS = [
   {
     id: 903,
     name: 'Central HVAC Plant',
+    site_id: 9501,
     block: 'Utilities Yard · North Campus',
     appliances: [
       { id: 9031, name: 'Chiller plant', power_watts: 54000 },
@@ -63,6 +91,7 @@ export const DEMO_ROOMS = [
   {
     id: 904,
     name: 'Administration Building',
+    site_id: 9501,
     block: 'Civic Block · North Campus',
     appliances: [
       { id: 9041, name: 'Office air conditioning', power_watts: 11500 },
@@ -74,6 +103,7 @@ export const DEMO_ROOMS = [
   {
     id: 905,
     name: 'Auditorium',
+    site_id: 9501,
     block: 'Arts & Events Block · North Campus',
     appliances: [
       { id: 9051, name: 'Stage and house lighting', power_watts: 9200 },
@@ -88,6 +118,7 @@ export const DEMO_ROOMS = [
   {
     id: 906,
     name: 'Dining Hall',
+    site_id: 9501,
     block: 'Commons Block · North Campus',
     appliances: [
       { id: 9061, name: 'Kitchen equipment', power_watts: 10000 },
@@ -99,7 +130,8 @@ export const DEMO_ROOMS = [
   {
     id: 907,
     name: 'Digital Research Centre',
-    block: 'Innovation Block · North Campus',
+    site_id: 9502,
+    block: 'Digital Block · City Innovation Centre',
     appliances: [
       { id: 9071, name: 'Server racks', power_watts: 11000 },
       { id: 9072, name: 'Cooling and ventilation', power_watts: 8000 },

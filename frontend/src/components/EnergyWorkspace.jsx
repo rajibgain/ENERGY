@@ -10,13 +10,15 @@ import { archiveBillRecord, createBillRecord, createInvitation, errorMessage, fe
 import { ELECTRICITY_DIRECTORY_SOURCES, INDIAN_STATES, STATE_ELECTRICITY_PROVIDERS } from '../data/electricityProviders';
 import { DEMO_TEAM } from '../data/demoWorkspace';
 import { roomEstimate, timeToMinutes } from '../utils/energyModel';
+import PortfolioMap from './PortfolioMap';
 
 const NAV = [
   { id: 'overview', label: 'Overview', number: '01' },
-  { id: 'performance', label: 'Energy profile', number: '02' },
-  { id: 'zones', label: 'Zones', number: '03' },
-  { id: 'imports', label: 'Schedule import', number: '04' },
-  { id: 'bills', label: 'Bill payments', number: '05' },
+  { id: 'locations', label: 'Locations', number: '02' },
+  { id: 'performance', label: 'Energy profile', number: '03' },
+  { id: 'zones', label: 'Zones', number: '04' },
+  { id: 'imports', label: 'Schedule import', number: '05' },
+  { id: 'bills', label: 'Bill payments', number: '06' },
 ];
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const ORGANIZATION_TYPES = ['Company', 'Commercial office', 'Education', 'Healthcare', 'Manufacturing', 'Retail', 'Hospitality', 'Logistics', 'Property portfolio', 'Public sector', 'Nonprofit', 'Other'];
@@ -153,7 +155,7 @@ function Metric({ icon: Icon, label, value, unit, detail }) {
   );
 }
 
-export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBillRecords, isOnline, isDemo, refreshing, lastUpdated, dataError, onRefresh, organization, onOrganizationChange, user, role, onLogout }) {
+export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBillRecords, sites, onCreateSite, onUpdateSite, onUploadSchematic, onClearSchematic, onMoveRoom, isOnline, isDemo, refreshing, lastUpdated, dataError, onRefresh, organization, onOrganizationChange, user, role, onLogout }) {
   const canManageWorkspace = role === 'owner' || role === 'admin';
   const canManageFacilities = role !== 'staff';
   const canViewBills = role !== 'staff';
@@ -561,7 +563,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
               <p className="ss-cinematic-eyebrow">A clearer view of the places that power your work.</p>
               <h1>Every building<br />holds a <em>signal.</em></h1>
               <p className="ss-cinematic-description">See energy patterns across your {organization.type.toLowerCase()} portfolio. Find the quiet waste. Turn it into a better way to operate.</p>
-              <div className="ss-cinematic-actions"><button className="ss-cinematic-cta" onClick={() => goToSection('zones')}>Explore the portfolio <ArrowDownRight size={15} /></button>{canViewBills && <button className="ss-cinematic-link" onClick={() => goToSection('bills')}>Electricity records <ArrowRight size={14} /></button>}</div>
+              <div className="ss-cinematic-actions"><button className="ss-cinematic-cta" onClick={() => goToSection('locations')}>Explore the portfolio <ArrowDownRight size={15} /></button>{canViewBills && <button className="ss-cinematic-link" onClick={() => goToSection('bills')}>Electricity records <ArrowRight size={14} /></button>}</div>
               <div className="ss-cinematic-meta"><span><i />{organization.name}</span><span>{refreshing ? 'Syncing workspace…' : lastUpdated ? 'Updated ' + lastUpdated.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Schedule-based estimates'}<button onClick={onRefresh} disabled={refreshing} aria-label="Refresh workspace data" title="Refresh workspace data" className="ss-cinematic-refresh"><RefreshCw size={12} className={refreshing ? 'ss-spin' : ''} /></button></span></div>
             </div>
             <div className="ss-cinematic-art" aria-hidden="true">
@@ -615,6 +617,20 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
               <p className="ss-metric-detail">Declared hours vs. operating baseline</p>
             </article>
           </section>
+
+          <PortfolioMap
+            sites={sites}
+            rooms={rooms}
+            role={role}
+            isDemo={isDemo}
+            organization={organization}
+            onCreateSite={onCreateSite}
+            onUpdateSite={onUpdateSite}
+            onUploadSchematic={onUploadSchematic}
+            onClearSchematic={onClearSchematic}
+            onMoveRoom={onMoveRoom}
+            onSelectRoom={(room) => { setSelectedRoom(room); setRoomAnalysis(null); }}
+          />
 
           <div className="ss-section-caption"><span>READ THE PATTERN</span><span>01 — 05</span></div>
           <div className="ss-analysis-grid">

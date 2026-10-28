@@ -42,14 +42,39 @@ def initialize_database():
                 connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN bbps_partner VARCHAR(80) NOT NULL DEFAULT 'Setu'")
             if "payment_portal_url" not in organization_columns:
                 connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN payment_portal_url VARCHAR(500) NOT NULL DEFAULT ''")
-    if "rooms" not in inspector.get_table_names():
-        return
-
-    room_columns = {column["name"] for column in inspector.get_columns("rooms")}
-    if "organization_id" not in room_columns:
-        # Existing facility data is assigned to the first organization that registers.
-        # Until then it remains inaccessible through the tenant-scoped API.
+    if "rooms" in inspector.get_table_names():
+        room_columns = {column["name"] for column in inspector.get_columns("rooms")}
         with engine.begin() as connection:
-            connection.exec_driver_sql(
-                "ALTER TABLE rooms ADD COLUMN organization_id INTEGER REFERENCES organizations(id)"
-            )
+            if "organization_id" not in room_columns:
+                # Existing facility data is assigned to the first organization that registers.
+                # Until then it remains inaccessible through the tenant-scoped API.
+                connection.exec_driver_sql(
+                    "ALTER TABLE rooms ADD COLUMN organization_id INTEGER REFERENCES organizations(id)"
+                )
+            if "site_id" not in room_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE rooms ADD COLUMN site_id INTEGER REFERENCES sites(id)"
+                )
+
+        # Give each existing organization a primary site and attach its old rooms.
+        with SessionLocal() as db:
+            for organization in db.query(models.Organization).all():
+                site = (
+                    db.query(models.Site)
+                    .filter(models.Site.organization_id == organization.id)
+                    .order_by(models.Site.id)
+                    .first()
+                )
+                if not site:
+                    site = models.Site(
+                        organization_id=organization.id,
+                        name="Main site",
+                        state=organization.state,
+                    )
+                    db.add(site)
+                    db.flush()
+                db.query(models.Room).filter(
+                    models.Room.organization_id == organization.id,
+                    models.Room.site_id.is_(None),
+                ).update({models.Room.site_id: site.id}, synchronize_session=False)
+            db.commit()

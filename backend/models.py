@@ -9,11 +9,12 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Time,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import deferred, relationship
 
 from database import Base
 
@@ -80,14 +81,38 @@ class Invitation(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class Site(Base):
+    __tablename__ = "sites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    address = Column(String(240), nullable=False, default="")
+    city = Column(String(100), nullable=False, default="")
+    state = Column(String(80), nullable=False, default="")
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    schematic_filename = Column(String(180), nullable=True)
+    schematic_content_type = Column(String(80), nullable=True)
+    schematic_data = deferred(Column(LargeBinary, nullable=True))
+
+    rooms = relationship("Room", back_populates="site")
+
+    @property
+    def has_schematic(self):
+        return bool(self.schematic_filename)
+
+
 class Room(Base):
     __tablename__ = "rooms"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(120), nullable=False, index=True)
     block = Column(String(120), nullable=False)
 
+    site = relationship("Site", back_populates="rooms")
     appliances = relationship("Appliance", back_populates="room", cascade="all, delete-orphan")
     schedules = relationship("Schedule", back_populates="room", cascade="all, delete-orphan")
 

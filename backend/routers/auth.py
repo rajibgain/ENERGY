@@ -88,12 +88,23 @@ def register(payload: schemas.RegisterRequest, response: Response, db: Session =
         user = models.User(email=email, full_name=payload.full_name.strip(), password_hash=hash_password(payload.password))
         db.add_all([organization, user])
         db.flush()
+        primary_site = models.Site(
+            organization_id=organization.id,
+            name="Main site",
+            state=organization.state,
+        )
+        db.add(primary_site)
+        db.flush()
         membership = models.Membership(user_id=user.id, organization_id=organization.id, role="owner", is_active=True)
         db.add(membership)
         # One owner creates a workspace. Any facilities from the old single-tenant
         # installation are adopted once, then become tenant-scoped as usual.
         db.query(models.Room).filter(models.Room.organization_id.is_(None)).update(
-            {models.Room.organization_id: organization.id}, synchronize_session=False
+            {
+                models.Room.organization_id: organization.id,
+                models.Room.site_id: primary_site.id,
+            },
+            synchronize_session=False,
         )
         db.commit()
         db.refresh(user)

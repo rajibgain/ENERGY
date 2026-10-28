@@ -11,7 +11,7 @@
 
 SyncSpace is a web application concept for understanding and managing energy use across a campus or multi-building organization. It brings facility zones, equipment ratings, operating schedules, electricity records and staff access into one workspace. A transparent schedule-based model estimates a zone's potential daily energy gap, related cost and associated emissions. The action center ranks zones for review so an energy manager can decide where to investigate first.
 
-The project includes an interactive sample campus for demonstration, state-based electricity-provider choices for India, CSV schedule import, organization roles and a bill ledger. The sample data is illustrative. The application does not read live meters or initiate electricity payments.
+The project includes an interactive sample campus for demonstration, an organization-scoped locations map with block and room views, optional building-plan uploads, state-based electricity-provider choices for India, CSV schedule import, organization roles and a bill ledger. The sample data is illustrative. The application does not read live meters or initiate electricity payments.
 
 ## Problem statement
 
@@ -26,6 +26,7 @@ Organizations often manage utility bills, building schedules, equipment lists an
 5. Keep electricity-provider and payment records attached to an organization and site.
 6. Support an owner, admin, manager and staff hierarchy with organization-scoped access.
 7. Explain the calculation and its limitations in the interface.
+8. Let each organization view its own site locations, block layouts and room details.
 
 ## Main features
 
@@ -33,6 +34,7 @@ Organizations often manage utility bills, building schedules, equipment lists an
 - **Schedule profile:** expected hourly demand derived from facility schedules and equipment ratings; it is labelled as a model rather than a meter trace.
 - **Action center:** up to three zones ranked by schedule-based estimated impact, each linking to equipment and timetable details.
 - **Facility zones:** searchable table of equipment load, schedule entries, estimated gap and review status.
+- **Locations and building plans:** map the sites in one organization, move rooms between its sites, group rooms by block, and optionally upload a PNG, JPG, WEBP or PDF schematic. Site coordinates and uploaded plans stay private to that organization.
 - **Schedule import:** download a CSV template and import schedules to a selected zone.
 - **Electricity ledger:** add and export bill records, track due and paid states, and record an external payment reference.
 - **India provider directory:** select a state or union territory, then choose a principal utility or enter a provider name from the bill.
@@ -65,16 +67,16 @@ The dashboard's emissions metric refers to the modeled schedule gap. It is not t
 
 The calculation assumes connected equipment could draw its full rated load during unscheduled hours. Real equipment may cycle, modulate, be switched off, or operate outside the timetable. A schedule gap is therefore a **planning signal**, not proof of waste or a verified saving. Validate it with meter data, occupancy information and an on-site check before taking action or reporting savings.
 
-The sample campus and bills are fabricated for demonstration. Real bill fetching, meter telemetry, building-control integration and payment confirmation require separately configured provider integrations. The bill portal feature opens a provider-hosted payment page; it does not move funds.
+The sample campus, map pins and bills are fabricated for demonstration. The map uses OpenStreetMap imagery, and real site pins require coordinates entered by the organization. Uploaded schematics are limited to 10 MB and are stored in the configured application database. Real bill fetching, meter telemetry, building-control integration and payment confirmation require separately configured provider integrations. The bill portal feature opens a provider-hosted payment page; it does not move funds.
 
 ## Roles and permissions
 
 | Role | Intended access |
 |---|---|
-| Owner | Organization settings, every role, facilities, team and electricity records |
-| Admin | Organization settings and management of managers and staff |
-| Manager | Facility schedules and electricity records |
-| Staff | Read facility and energy-performance information |
+| Owner | Organization settings, every role, locations, building plans, facilities, team and electricity records |
+| Admin | Organization settings, locations, building plans, facilities, managers and staff |
+| Manager | Locations, building plans, room assignments, facility schedules and electricity records |
+| Staff | Read organization locations, room plans and energy-performance information |
 
 The API checks the role and organization scope for protected requests. Passwords are stored as scrypt hashes and the browser uses an HTTP-only session cookie.
 
@@ -89,6 +91,7 @@ flowchart LR
     R --> D[SQLAlchemy data layer]
     D --> DB[(SQLite local database)]
     W --> X[CSV schedule import and report exports]
+    W --> OSM[OpenStreetMap site map]
 ```
 
 ### Technology
