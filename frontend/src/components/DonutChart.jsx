@@ -11,7 +11,6 @@ export default function DonutChart({
   segments = DEFAULT_SEGMENTS,
   size = 200,
   strokeWidth = 24,
-  title = 'Energy Mix',
 }) {
   const [hoveredIndex, setHoveredIndex] = useState(null);
   const [mounted, setMounted] = useState(false);
@@ -27,8 +26,6 @@ export default function DonutChart({
   const gap = 4; // gap in degrees between segments
   const totalGapDeg = gap * segments.length;
   const availableDeg = 360 - totalGapDeg;
-
-  let cumulativeOffset = 0;
 
   return (
     <div className="flex flex-col items-center">
@@ -53,10 +50,10 @@ export default function DonutChart({
           {segments.map((seg, i) => {
             const segDeg = (seg.value / total) * availableDeg;
             const segLen = (segDeg / 360) * circumference;
-            const gapLen = (gap / 360) * circumference;
-            const dashOffset = mounted ? circumference - segLen : circumference;
-            const rotation = (cumulativeOffset / 360) * circumference;
-            cumulativeOffset += segDeg + gap;
+            const precedingDegrees = segments.slice(0, i).reduce(
+              (sum, item) => sum + (item.value / total) * availableDeg + gap,
+              0,
+            );
 
             return (
               <circle
@@ -68,7 +65,7 @@ export default function DonutChart({
                 stroke={seg.color}
                 strokeWidth={hoveredIndex === i ? strokeWidth + 4 : strokeWidth}
                 strokeDasharray={`${segLen} ${circumference - segLen}`}
-                strokeDashoffset={-((cumulativeOffset - segDeg - gap) / 360) * circumference}
+                strokeDashoffset={-(precedingDegrees / 360) * circumference}
                 style={{
                   opacity: mounted ? (hoveredIndex !== null && hoveredIndex !== i ? 0.4 : 1) : 0,
                   transition: `stroke-dashoffset 1.2s cubic-bezier(0.16,1,0.3,1) ${i * 150}ms, opacity 0.3s ease, stroke-width 0.3s ease`,

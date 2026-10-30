@@ -43,6 +43,7 @@ class User(Base):
     email = Column(String(254), nullable=False, unique=True, index=True)
     full_name = Column(String(120), nullable=False)
     password_hash = Column(String(256), nullable=False)
+    google_sub = Column(String(255), nullable=True, unique=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 

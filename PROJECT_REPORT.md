@@ -34,11 +34,13 @@ Organizations often manage utility bills, building schedules, equipment lists an
 - **Schedule profile:** expected hourly demand derived from facility schedules and equipment ratings; it is labelled as a model rather than a meter trace.
 - **Action center:** up to three zones ranked by schedule-based estimated impact, each linking to equipment and timetable details.
 - **Facility zones:** searchable table of equipment load, schedule entries, estimated gap and review status.
-- **Locations and building plans:** map the sites in one organization, move rooms between its sites, group rooms by block, and optionally upload a PNG, JPG, WEBP or PDF schematic. Site coordinates and uploaded plans stay private to that organization.
+- **Locations and building plans:** map the sites in one organization, set a pin by clicking the map or pasting a full Google Maps link, move rooms between its sites, group rooms by block, and optionally upload a PNG, JPG, WEBP or PDF schematic. Site coordinates and uploaded plans stay private to that organization.
+- **New workspace setup:** new organizations begin with no sample facilities or generated energy figures. Add a location, create zones with equipment ratings, and import schedules to see estimates based on the entered data.
 - **Schedule import:** download a CSV template and import schedules to a selected zone.
 - **Electricity ledger:** add and export bill records, track due and paid states, and record an external payment reference.
 - **India provider directory:** select a state or union territory, then choose a principal utility or enter a provider name from the bill.
 - **Team access:** owner, admin, manager and staff roles with invitations in the connected workspace.
+- **Account security:** Google Identity Services sign-in with server-verified ID tokens, plus password confirmation and strength requirements for password-based signup.
 - **Assignment demo:** explore a sample West Bengal campus, sample WBSEDCL and CESC records, settings and team roles without creating an account.
 - **Project method:** in-app explanation of inputs, equations and model limits.
 
@@ -67,7 +69,7 @@ The dashboard's emissions metric refers to the modeled schedule gap. It is not t
 
 The calculation assumes connected equipment could draw its full rated load during unscheduled hours. Real equipment may cycle, modulate, be switched off, or operate outside the timetable. A schedule gap is therefore a **planning signal**, not proof of waste or a verified saving. Validate it with meter data, occupancy information and an on-site check before taking action or reporting savings.
 
-The sample campus, map pins and bills are fabricated for demonstration. The map uses OpenStreetMap imagery, and real site pins require coordinates entered by the organization. Uploaded schematics are limited to 10 MB and are stored in the configured application database. Real bill fetching, meter telemetry, building-control integration and payment confirmation require separately configured provider integrations. The bill portal feature opens a provider-hosted payment page; it does not move funds.
+The sample campus, map pins and bills are fabricated for demonstration. The map uses OpenStreetMap imagery. Uploaded schematics are limited to 10 MB and are stored in the configured application database. Real bill fetching, meter telemetry, building-control integration and payment confirmation require separately configured provider integrations. The bill portal feature opens a provider-hosted payment page; it does not move funds.
 
 ## Roles and permissions
 

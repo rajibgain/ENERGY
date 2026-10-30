@@ -3,7 +3,7 @@ import {
   Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Building2, Check,
   CheckCircle2, ChevronDown, ChevronRight, CircleDollarSign, CircleHelp,
   Clock3, CreditCard, Download, ExternalLink, FileDown, FileText, Leaf,
-  MapPin, MoreHorizontal, Plus, RefreshCw, Search, ShieldCheck, Sun,
+  MapPin, Mail, MoreHorizontal, Plus, RefreshCw, Search, ShieldCheck, Sun,
   UploadCloud, X, Zap, Users, LogOut, Copy, UserPlus,
 } from 'lucide-react';
 import { archiveBillRecord, createBillRecord, createInvitation, errorMessage, fetchInvitations, fetchMembers, fetchRoomAnalysis, recordBillPayment, revokeInvitation, suspendMember, updateMember, uploadScheduleCSV } from '../services/api';
@@ -22,6 +22,7 @@ const NAV = [
 ];
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const ORGANIZATION_TYPES = ['Company', 'Commercial office', 'Education', 'Healthcare', 'Manufacturing', 'Retail', 'Hospitality', 'Logistics', 'Property portfolio', 'Public sector', 'Nonprofit', 'Other'];
+let demoBillSequence = 0;
 function number(value, digits = 1) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
@@ -155,7 +156,7 @@ function Metric({ icon: Icon, label, value, unit, detail }) {
   );
 }
 
-export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBillRecords, sites, onCreateSite, onUpdateSite, onUploadSchematic, onClearSchematic, onMoveRoom, isOnline, isDemo, refreshing, lastUpdated, dataError, onRefresh, organization, onOrganizationChange, user, role, onLogout }) {
+export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBillRecords, sites, onCreateRoom, onCreateSite, onUpdateSite, onUploadSchematic, onClearSchematic, onMoveRoom, isOnline, isDemo, refreshing, lastUpdated, dataError, onRefresh, organization, onOrganizationChange, user, role, onLogout }) {
   const canManageWorkspace = role === 'owner' || role === 'admin';
   const canManageFacilities = role !== 'staff';
   const canViewBills = role !== 'staff';
@@ -175,6 +176,10 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   const [toast, setToast] = useState('');
   const [organizationModal, setOrganizationModal] = useState(false);
   const [organizationDraft, setOrganizationDraft] = useState(organization);
+  const [zoneModal, setZoneModal] = useState(false);
+  const [zoneDraft, setZoneDraft] = useState({ name: '', block: '', site_id: '', appliances: [{ name: '', power_watts: '' }] });
+  const [zoneBusy, setZoneBusy] = useState(false);
+  const [zoneError, setZoneError] = useState('');
   const [billModal, setBillModal] = useState('');
   const [editingBill, setEditingBill] = useState(null);
   const [newBill, setNewBill] = useState({ biller: '', providerKey: '', customBiller: '', state: organization.state || 'Maharashtra', site: '', reference: '', amount: '', dueDate: '' });
@@ -202,22 +207,14 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
     const hasGap = roomEstimate(room, organization.tariffRate, organization.carbonFactor, organization.operatingHours).idleHours > 0 || !(room.schedules || []).length;
     return matchesText && (!needsAttention || hasGap);
   }), [rooms, search, needsAttention, organization]);
-  const today = new Date();
-  const dateLabel = today.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   const score = Number(dashboard?.campus_efficiency_score || 0);
+  const hasFacilityData = rooms.length > 0;
   const scoreAngle = Math.max(0, Math.min(100, score)) * 3.6;
   const dueBills = billRecords.filter((bill) => bill.status === 'due');
   const dueTotal = dueBills.reduce((total, bill) => total + Number(bill.amount || 0), 0);
   const visibleBills = billRecords.filter((bill) => billFilter === 'all' || (billFilter === 'archived' ? bill.status === 'void' : bill.status === billFilter)).sort((a, b) => String(b.dueDate).localeCompare(String(a.dueDate)));
   const stateProviders = STATE_ELECTRICITY_PROVIDERS[newBill.state] || [];
   const selectedProvider = stateProviders.find((provider) => provider.id === newBill.providerKey);
-
-  useEffect(() => {
-    setOrganizationDraft(organization);
-    setBbpsPartner(organization.bbpsPartner || 'Setu');
-    setPaymentPortalUrl(organization.paymentPortalUrl || '');
-    setPortalDraft(organization.paymentPortalUrl || '');
-  }, [organization.id, organization.name, organization.type, organization.state, organization.tariffRate, organization.carbonFactor, organization.operatingHours, organization.bbpsPartner, organization.paymentPortalUrl]);
 
   useEffect(() => {
     const sections = NAV.map(({ id }) => document.getElementById(id)).filter(Boolean);
@@ -254,6 +251,65 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   const goToSection = (id) => {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setActiveSection(id);
+  };
+
+  const openOrganizationSettings = () => {
+    setOrganizationDraft(organization);
+    setBbpsPartner(organization.bbpsPartner || 'Setu');
+    setPaymentPortalUrl(organization.paymentPortalUrl || '');
+    setPortalDraft(organization.paymentPortalUrl || '');
+    setOrganizationModal(true);
+  };
+
+  const openZoneModal = () => {
+    if (!sites.length) {
+      setToast('Add a location first, then connect facility zones to it.');
+      goToSection('locations');
+      return;
+    }
+    setZoneDraft({ name: '', block: '', site_id: String(sites[0].id), appliances: [{ name: '', power_watts: '' }] });
+    setZoneError('');
+    setZoneModal(true);
+  };
+
+  const addEquipmentRow = () => setZoneDraft((current) => ({
+    ...current,
+    appliances: [...current.appliances, { name: '', power_watts: '' }],
+  }));
+
+  const updateEquipmentRow = (index, field, value) => setZoneDraft((current) => ({
+    ...current,
+    appliances: current.appliances.map((appliance, itemIndex) => itemIndex === index ? { ...appliance, [field]: value } : appliance),
+  }));
+
+  const removeEquipmentRow = (index) => setZoneDraft((current) => ({
+    ...current,
+    appliances: current.appliances.filter((_, itemIndex) => itemIndex !== index),
+  }));
+
+  const saveZone = async (event) => {
+    event.preventDefault();
+    setZoneError('');
+    if (!zoneDraft.name.trim() || !zoneDraft.block.trim() || !zoneDraft.site_id || zoneDraft.appliances.some((appliance) => !appliance.name.trim() || !(Number(appliance.power_watts) > 0))) {
+      setZoneError('Add a zone name, building, location, and valid rated power for each equipment item.');
+      return;
+    }
+    setZoneBusy(true);
+    try {
+      await onCreateRoom({
+        name: zoneDraft.name.trim(),
+        block: zoneDraft.block.trim(),
+        site_id: Number(zoneDraft.site_id),
+        appliances: zoneDraft.appliances.map((appliance) => ({ name: appliance.name.trim(), power_watts: Number(appliance.power_watts) })),
+      });
+      if (!isDemo) await onRefresh();
+      setZoneModal(false);
+      setToast('Zone added. Import its timetable to calculate an energy estimate.');
+    } catch (error) {
+      setZoneError(errorMessage(error, 'Could not create this zone. Please try again.'));
+    } finally {
+      setZoneBusy(false);
+    }
   };
 
   const exportRooms = () => {
@@ -354,7 +410,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
     try {
       const payload = { ...newBill, biller: providerName, reference: newBill.reference.trim() || '—', site: newBill.site.trim() || 'Portfolio' };
       const created = isDemo
-        ? { id: Date.now(), biller: payload.biller, state: payload.state, site: payload.site, reference: payload.reference, amount: Number(payload.amount), dueDate: payload.dueDate, status: 'due', paidDate: null, paymentReference: null }
+        ? { id: `demo-bill-${++demoBillSequence}`, biller: payload.biller, state: payload.state, site: payload.site, reference: payload.reference, amount: Number(payload.amount), dueDate: payload.dueDate, status: 'due', paidDate: null, paymentReference: null }
         : await createBillRecord(payload);
       setBillRecords((current) => [created, ...current]);
       setNewBill({ biller: '', providerKey: '', customBiller: '', state: organization.state || 'Maharashtra', site: '', reference: '', amount: '', dueDate: '' });
@@ -538,7 +594,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         </nav>
         <div className="ss-sidebar-bottom">
           <div className="ss-mission-card"><span className="ss-mission-icon"><Leaf size={14} /></span><span className="ss-side-label">THE MISSION</span><p>Make every watt work harder.</p><span className="ss-mission-index">One connected view, across every site.</span><button className="ss-mission-method" onClick={() => setMethodologyOpen(true)}>Project method <ArrowRight size={11} /></button></div>
-          <button className="ss-profile-chip" onClick={() => canManageWorkspace && (setOrganizationDraft(organization), setOrganizationModal(true))} aria-label={canManageWorkspace ? 'Open workspace settings' : 'Your account'}><span className="ss-avatar">{user.full_name.charAt(0).toUpperCase()}</span><span><strong>{user.full_name}</strong><small>{role} · {organization.name}</small></span><MoreHorizontal size={16} /></button>
+          <button className="ss-profile-chip" onClick={() => canManageWorkspace && openOrganizationSettings()} aria-label={canManageWorkspace ? 'Open workspace settings' : 'Your account'}><span className="ss-avatar">{user.full_name.charAt(0).toUpperCase()}</span><span><strong>{user.full_name}</strong><small>{role} · {organization.name}</small></span><MoreHorizontal size={16} /></button>
         </div>
       </aside>
 
@@ -546,7 +602,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         <header className="ss-topbar">
           <div className="ss-breadcrumb"><span>{organization.name}</span><ChevronDown size={13} /><span className="ss-breadcrumb-sep">/</span><span>Portfolio overview</span></div>
           <div className="ss-topbar-right">
-            {canManageWorkspace && <button className="ss-org-switch" onClick={() => { setOrganizationDraft(organization); setOrganizationModal(true); }}><Building2 size={14} /><span>Settings</span></button>}
+            {canManageWorkspace && <button className="ss-org-switch" onClick={openOrganizationSettings}><Building2 size={14} /><span>Settings</span></button>}
             {canManageWorkspace && <button className="ss-org-switch" onClick={openTeam}><Users size={14} /><span>Team</span></button>}
             <span className={'ss-connection' + (isOnline ? ' is-online' : '') + (isDemo ? ' is-demo' : '')}><i />{isDemo ? 'DEMO MODE' : isOnline ? 'API connected' : 'Offline'}</span>
             <span className="ss-topbar-divider" />
@@ -603,18 +659,18 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
               <div className="ss-primary-grid" />
               <div className="ss-primary-content">
               <div className="ss-primary-label"><span className="ss-primary-mark"><Activity size={15} /></span> MODELED DAILY ENERGY GAP <button className="ss-metric-help" onClick={() => setMethodologyOpen(true)} aria-label="How the energy estimate is calculated" title="How this estimate is calculated"><CircleHelp size={13} /></button><span className="ss-primary-arrow"><ArrowDownRight size={14} /></span></div>
-                <div className="ss-primary-number">{number(dashboard?.campus_wasted_energy_kwh, 1)}<span>kWh</span></div>
-              <div className="ss-primary-foot"><span>Planning estimate from equipment ratings and schedules</span><span className="ss-primary-count">{rooms.length} ZONES</span></div>
+              <div className="ss-primary-number">{hasFacilityData ? number(dashboard?.campus_wasted_energy_kwh, 1) : '—'}<span>{hasFacilityData ? 'kWh' : ''}</span></div>
+              <div className="ss-primary-foot"><span>{hasFacilityData ? 'Planning estimate from equipment ratings and schedules' : 'Add facility data to build your energy overview'}</span><span className="ss-primary-count">{rooms.length} ZONES</span></div>
               </div>
               <div className="ss-orbit-art" aria-hidden="true"><span className="ss-orbit ss-orbit-one" /><span className="ss-orbit ss-orbit-two" /><span className="ss-orbit ss-orbit-three" /><i /><b /></div>
               <div className="ss-primary-index">01 <span>/ DAILY</span></div>
             </article>
-            <Metric icon={CircleDollarSign} label="Estimated cost" value={'₹' + number(dashboard?.campus_financial_loss_inr, 0)} unit="" detail={`Per day · at ₹${organization.tariffRate}/kWh`} />
-            <Metric icon={Leaf} label="Modeled waste emissions" value={number(dashboard?.campus_carbon_footprint_kg, 1)} unit="kg" detail={`CO₂ tied to the estimated gap · factor ${organization.carbonFactor}`} />
+            <Metric icon={CircleDollarSign} label="Estimated cost" value={hasFacilityData ? '₹' + number(dashboard?.campus_financial_loss_inr, 0) : '—'} unit="" detail={hasFacilityData ? `Per day · at ₹${organization.tariffRate}/kWh` : 'Add facility data to estimate cost'} />
+            <Metric icon={Leaf} label="Modeled waste emissions" value={hasFacilityData ? number(dashboard?.campus_carbon_footprint_kg, 1) : '—'} unit={hasFacilityData ? 'kg' : ''} detail={hasFacilityData ? `CO₂ tied to the estimated gap · factor ${organization.carbonFactor}` : 'Add facility data to estimate emissions'} />
             <article className="ss-metric ss-card ss-efficiency">
               <div className="ss-metric-top"><span className="ss-metric-icon"><ShieldCheck size={16} strokeWidth={1.7} /></span><span className="ss-metric-label">Schedule coverage</span><MoreHorizontal size={16} className="ss-muted-icon" aria-hidden="true" /></div>
-              <div className="ss-efficiency-row"><div className="ss-efficiency-value">{number(score, 0)}<span>%</span></div><div className="ss-efficiency-ring" style={{ '--ss-angle': scoreAngle + 'deg' }}><span><Check size={13} /></span></div></div>
-              <p className="ss-metric-detail">Declared hours vs. operating baseline</p>
+              <div className="ss-efficiency-row"><div className="ss-efficiency-value">{hasFacilityData ? number(score, 0) : '—'}<span>{hasFacilityData ? '%' : ''}</span></div><div className="ss-efficiency-ring" style={{ '--ss-angle': scoreAngle + 'deg' }}><span><Check size={13} /></span></div></div>
+              <p className="ss-metric-detail">{hasFacilityData ? 'Declared hours vs. operating baseline' : 'Add facility data to calculate coverage'}</p>
             </article>
           </section>
 
@@ -638,7 +694,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
             <aside className="ss-card ss-opportunity ss-action-center">
               <div className="ss-card-heading ss-opportunity-heading"><div><div className="ss-kicker"><span className="ss-kicker-dot" /> RULE-BASED ACTION CENTER</div><h2>Good places to start.</h2></div><span className="ss-opportunity-icon"><Sun size={17} /></span></div>
               <p className="ss-opportunity-copy">Zones with the largest schedule-based energy gaps, ranked by estimated daily impact.</p>
-              {actionOpportunities.length ? <div className="ss-action-list">{actionOpportunities.map((room, index) => <button className="ss-action-item" key={room.id} onClick={() => { setSelectedRoom(room); setRoomAnalysis(null); goToSection('zones'); }}><span className="ss-action-rank">0{index + 1}</span><span className="ss-action-copy"><strong>Review schedule</strong><small>{room.name} · {room.block}</small></span><span className="ss-action-impact"><strong>{number(room.estimate.wasteKwh, 1)} <small>kWh/d</small></strong><em>₹{number(room.estimate.cost, 0)}/day</em></span><ArrowUpRight size={14} /></button>)}</div> : <div className="ss-opportunity-empty"><span className="ss-empty-mark"><Check size={19} /></span><strong>No gaps modeled.</strong><p>Add operating schedules and equipment ratings to build the action list.</p>{canManageFacilities && <button className="ss-text-action" onClick={() => goToSection('imports')}>Import a schedule <ArrowRight size={14} /></button>}</div>}
+              {actionOpportunities.length ? <div className="ss-action-list">{actionOpportunities.map((room, index) => <button className="ss-action-item" key={room.id} onClick={() => { setSelectedRoom(room); setRoomAnalysis(null); goToSection('zones'); }}><span className="ss-action-rank">0{index + 1}</span><span className="ss-action-copy"><strong>Review schedule</strong><small>{room.name} · {room.block}</small></span><span className="ss-action-impact"><strong>{number(room.estimate.wasteKwh, 1)} <small>kWh/d</small></strong><em>₹{number(room.estimate.cost, 0)}/day</em></span><ArrowUpRight size={14} /></button>)}</div> : <div className="ss-opportunity-empty"><span className="ss-empty-mark"><Check size={19} /></span><strong>{rooms.length ? 'No gaps modeled.' : 'No facility data yet.'}</strong><p>{rooms.length ? 'Add or update operating schedules and equipment ratings to build the action list.' : 'Create a zone with your equipment, then import its timetable to get started.'}</p>{canManageFacilities && rooms.length > 0 && <button className="ss-text-action" onClick={() => goToSection('imports')}>Import a schedule <ArrowRight size={14} /></button>}</div>}
               <div className="ss-opportunity-foot"><span><Clock3 size={12} /> Rated load × unscheduled hours · not meter-verified</span><button className="ss-methodology-link" onClick={() => setMethodologyOpen(true)}>How it works <ArrowRight size={11} /></button></div>
             </aside>
           </div>
@@ -647,7 +703,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
             <div className="ss-section-caption"><span>THE BUILDING BLOCKS</span><span>02 — 04</span></div>
             <div className="ss-zones-heading">
               <div><div className="ss-kicker"><span className="ss-kicker-dot" /> FACILITY PORTFOLIO</div><h2>Every zone, <em>in view.</em></h2><p>Equipment and schedule coverage, building by building.</p></div>
-              <button className="ss-button ss-button-quiet" onClick={exportRooms}><Download size={15} /> Export estimates <ArrowRight size={14} /></button>
+              <div className="ss-zones-heading-actions"><button className="ss-button ss-button-quiet" onClick={exportRooms}><Download size={15} /> Export estimates <ArrowRight size={14} /></button>{canManageFacilities && <button className="ss-button ss-button-primary" onClick={openZoneModal}><Plus size={15} /> Add zone</button>}</div>
             </div>
             <div className="ss-card ss-zone-table-card">
               <div className="ss-zone-toolbar">
@@ -657,7 +713,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
                   <button className={'ss-filter-button' + (needsAttention ? ' is-selected' : '')} onClick={() => setNeedsAttention(!needsAttention)} aria-pressed={needsAttention}><span className="ss-filter-dot" /> Needs attention</button>
                 </div>
               </div>
-              {rooms.length === 0 ? <div className="ss-table-empty"><div className="ss-empty-mark"><Zap size={18} /></div><strong>No zones connected yet.</strong><p>Add facilities to the workspace API, then refresh to build your energy overview.</p></div> : filteredRooms.length === 0 ? <div className="ss-table-empty"><strong>No zones match this view.</strong><p>Clear the search or attention filter to see more zones.</p><button className="ss-text-action" onClick={() => { setSearch(''); setNeedsAttention(false); }}>Clear filters <X size={13} /></button></div> : <div className="ss-table-scroll"><table className="ss-zone-table"><thead><tr><th>ZONE / BUILDING</th><th>CONNECTED LOAD</th><th>SCHEDULES</th><th>DAILY WASTE ESTIMATE</th><th>STATUS</th><th><span className="ss-visually-hidden">View zone</span></th></tr></thead><tbody>
+              {rooms.length === 0 ? <div className="ss-table-empty"><div className="ss-empty-mark"><Zap size={18} /></div><strong>No zones connected yet.</strong><p>Create a zone and add its equipment, then upload a timetable to calculate estimates from your facility data.</p>{canManageFacilities && <button className="ss-text-action" onClick={openZoneModal}><Plus size={13} /> Add your first zone</button>}</div> : filteredRooms.length === 0 ? <div className="ss-table-empty"><strong>No zones match this view.</strong><p>Clear the search or attention filter to see more zones.</p><button className="ss-text-action" onClick={() => { setSearch(''); setNeedsAttention(false); }}>Clear filters <X size={13} /></button></div> : <div className="ss-table-scroll"><table className="ss-zone-table"><thead><tr><th>ZONE / BUILDING</th><th>CONNECTED LOAD</th><th>SCHEDULES</th><th>DAILY WASTE ESTIMATE</th><th>STATUS</th><th><span className="ss-visually-hidden">View zone</span></th></tr></thead><tbody>
                 {filteredRooms.map((room, index) => {
                   const estimate = roomEstimate(room, organization.tariffRate, organization.carbonFactor, organization.operatingHours);
                   const attention = estimate.idleHours > 0 || !(room.schedules || []).length;
@@ -727,6 +783,29 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
       </main>
 
       <nav className="ss-mobile-nav" aria-label="Mobile navigation" style={{ gridTemplateColumns: `repeat(${visibleNav.length}, minmax(0, 1fr))` }}>{visibleNav.map((item) => <button key={item.id} onClick={() => goToSection(item.id)} className={activeSection === item.id ? 'is-active' : ''}><span>{item.number}</span>{item.id === 'imports' ? 'Import' : item.id === 'bills' ? 'Bills' : item.label}</button>)}</nav>
+
+      {zoneModal && <div className="ss-modal-backdrop ss-form-backdrop" onClick={() => !zoneBusy && setZoneModal(false)}>
+        <section className="ss-form-modal ss-zone-modal" role="dialog" aria-modal="true" aria-labelledby="ss-zone-create-title" onClick={(event) => event.stopPropagation()}>
+          <div className="ss-modal-heading"><span className="ss-form-modal-icon"><Zap size={17} /></span><button className="ss-icon-button" aria-label="Close add zone" disabled={zoneBusy} onClick={() => setZoneModal(false)}><X size={17} /></button></div>
+          <div className="ss-modal-copy"><div className="ss-kicker"><span className="ss-kicker-dot" /> FACILITY DATA</div><h2 id="ss-zone-create-title">Add a real<br /><em>facility zone.</em></h2><p>Add the connected equipment you want to model. Estimates will use this information and the timetable you import later.</p></div>
+          <form className="ss-form-grid" onSubmit={saveZone}>
+            <label className="ss-form-field"><span>ZONE NAME</span><input required minLength="1" maxLength="120" value={zoneDraft.name} onChange={(event) => setZoneDraft({ ...zoneDraft, name: event.target.value })} placeholder="Research lab, floor 2…" /></label>
+            <label className="ss-form-field"><span>BLOCK / BUILDING</span><input required minLength="1" maxLength="120" value={zoneDraft.block} onChange={(event) => setZoneDraft({ ...zoneDraft, block: event.target.value })} placeholder="Block A" /></label>
+            <label className="ss-form-field ss-field-wide"><span>LOCATION</span><select required value={zoneDraft.site_id} onChange={(event) => setZoneDraft({ ...zoneDraft, site_id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
+            <div className="ss-zone-equipment ss-field-wide">
+              <div className="ss-zone-equipment-head"><span>EQUIPMENT & RATED POWER</span><button type="button" disabled={zoneDraft.appliances.length >= 50} onClick={addEquipmentRow}><Plus size={12} /> Add item</button></div>
+              {zoneDraft.appliances.map((appliance, index) => <div className="ss-zone-equipment-row" key={index}>
+                <label className="ss-form-field"><span>{index === 0 ? 'EQUIPMENT NAME' : `EQUIPMENT ${index + 1}`}</span><input required minLength="1" maxLength="120" value={appliance.name} onChange={(event) => updateEquipmentRow(index, 'name', event.target.value)} placeholder="Air conditioner" /></label>
+                <label className="ss-form-field"><span>RATED POWER · W</span><input type="number" required min="0.01" max="10000000" step="any" value={appliance.power_watts} onChange={(event) => updateEquipmentRow(index, 'power_watts', event.target.value)} placeholder="1500" /></label>
+                {zoneDraft.appliances.length > 1 && <button type="button" className="ss-zone-equipment-remove" aria-label={`Remove equipment ${index + 1}`} onClick={() => removeEquipmentRow(index)}><X size={14} /></button>}
+              </div>)}
+            </div>
+            {zoneError && <div className="ss-auth-error ss-field-wide" role="alert">{zoneError}</div>}
+            <div className="ss-form-note ss-field-wide"><Activity size={14} /> These are equipment-based planning estimates. Import a timetable to calculate the schedule gap; no readings are fabricated.</div>
+            <div className="ss-form-actions ss-field-wide"><button type="button" className="ss-button ss-button-quiet" disabled={zoneBusy} onClick={() => setZoneModal(false)}>Cancel</button><button type="submit" className="ss-button ss-button-primary" disabled={zoneBusy}>{zoneBusy ? 'Saving…' : 'Add zone'} <ArrowRight size={14} /></button></div>
+          </form>
+        </section>
+      </div>}
 
       {organizationModal && <div className="ss-modal-backdrop ss-form-backdrop" onClick={() => setOrganizationModal(false)}>
         <section className="ss-form-modal" role="dialog" aria-modal="true" aria-labelledby="ss-org-modal-title" onClick={(event) => event.stopPropagation()}>

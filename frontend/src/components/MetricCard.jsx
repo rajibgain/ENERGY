@@ -15,7 +15,7 @@ const cardVariants = {
   }),
 };
 
-export default function MetricCard({ index, icon: Icon, label, value, rawValue, prefix, suffix, decimals, subtitle, color, glowClass }) {
+export default function MetricCard({ index, icon: Icon, label, rawValue, prefix, suffix, decimals, subtitle, color, glowClass }) {
   const colorMap = {
     neon: 'text-neon',
     green: 'text-neon-green',

@@ -33,7 +33,11 @@ npm run dev
 
 Open `http://127.0.0.1:5173`. The first person to create an organization becomes its owner. Owners and admins can open **Team** to invite people; the invitation link is shown once, expires after seven days and is accepted using the invited email address.
 
-The local API uses SQLite at `backend/syncspace.db`. It creates new tables and adds the organization, site, and provider settings columns needed by the updated workspace. Existing rooms are assigned to a primary site for their organization. Site map pins need latitude and longitude; building plans are optional PNG, JPG, WEBP, or PDF uploads up to 10 MB and are stored with the organization database.
+New organization workspaces start empty: no demo rooms, placeholder location, or generated energy figures. Add a location by marking it on the map or pasting a full Google Maps link with a pin, then add zones and rated equipment. Import a schedule CSV to calculate estimates from those inputs. An empty workspace shows blank metrics until facility data exists.
+
+The local API uses SQLite at `backend/syncspace.db`. It creates new tables and adds the organization, site, provider, and Google identity columns needed by the workspace. Map pins are optional; a full Google Maps link or the on-screen map picker can set one. Shortened Google Maps sharing links do not expose coordinates to the browser. Building plans are optional PNG, JPG, WEBP, or PDF uploads up to 10 MB and are stored with the organization database. Unscoped legacy room rows are not assigned to new organizations.
+
+Account passwords require at least 12 characters, lowercase and uppercase letters, a number, and a symbol. Google sign-in and Google-based workspace creation require a Google Identity Services web client ID: set the same ID as backend `GOOGLE_CLIENT_ID` and frontend `VITE_GOOGLE_CLIENT_ID`. For local development, copy `frontend/.env.example` to `frontend/.env.local` and add a web client ID; copy `backend/.env.example` to `backend/.env` and set the matching server value. Register the local frontend origins in the Google OAuth client. The backend verifies each Google ID token before creating a session.
 
 ## Roles
 
@@ -46,6 +50,8 @@ Role checks and organization scoping run in the API. The browser stores the logi
 
 ## Deployment settings
 
-Set `APP_ENV=production`, a stable `AUTH_SECRET_KEY` with at least 32 characters, a production `DATABASE_URL`, `VITE_API_BASE_URL` to the API URL, and `FRONTEND_ORIGINS` to the exact browser origin(s). Use HTTPS in production. The API session cookie is marked Secure when `APP_ENV=production`.
+GitHub Pages hosts only the static frontend. A full account workspace also needs the FastAPI service and a persistent production database hosted separately. Set `APP_ENV=production`, a stable `AUTH_SECRET_KEY` with at least 32 characters, a production `DATABASE_URL`, `GOOGLE_CLIENT_ID`, and `FRONTEND_ORIGINS` to the exact browser origin(s). Add the API's public HTTPS root URL and the matching Google web client ID as GitHub Actions repository variables `VITE_API_BASE_URL` and `VITE_GOOGLE_CLIENT_ID`; the Pages workflow passes them into the frontend build. Without the API variable, the public assignment demo still works while account sign-in reports that the service is not configured. Use HTTPS in production. The API session cookie is marked Secure when `APP_ENV=production`.
+
+Create the Google web client in [Google Identity Services setup](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid), add the production frontend origin to its authorized JavaScript origins, and keep the client ID the same on the frontend and API. The ID is public configuration; do not put a Google client secret in the frontend.
 
 The bill section records statements and reconciliations in the organization database. It can open a provider-hosted payment page configured by an owner or admin; live bill fetching and payment confirmation still require a commercial integration with an onboarded BBPS provider.

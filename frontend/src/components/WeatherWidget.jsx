@@ -1,4 +1,4 @@
-import { Cloud, Sun, Droplets, Wind } from 'lucide-react';
+import { Sun, Droplets, Wind } from 'lucide-react';
 
 export default function WeatherWidget() {
   // Mock weather data

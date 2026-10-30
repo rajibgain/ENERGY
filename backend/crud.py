@@ -62,6 +62,13 @@ def create_room(db: Session, room: schemas.RoomCreate, organization_id: int):
         block=room.block.strip(),
     )
     db.add(db_room)
+    db.flush()
+    for appliance in room.appliances:
+        db.add(models.Appliance(
+            name=appliance.name.strip(),
+            power_watts=appliance.power_watts,
+            room_id=db_room.id,
+        ))
     db.commit()
     return get_room(db, db_room.id, organization_id)
 

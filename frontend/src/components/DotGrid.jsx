@@ -59,7 +59,7 @@ export default function DotGrid() {
             alpha = 0.08 + ease * 0.5;
 
             // Cyan tint near cursor
-            const r = Math.round(0 + ease * 0);
+            const r = 0;
             const g = Math.round(255 * 0.08 + ease * 243 * 0.6);
             const b = Math.round(255 * 0.08 + ease * 255 * 0.6);
             ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;

@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   ArrowUpRight, ArrowDownRight, UploadCloud, Activity,
   Zap, DollarSign, Wind, ChevronRight, FileUp,
-  CheckCircle2, AlertCircle, Leaf, TrendingUp,
-  Bell, Search, Settings, BarChart3, Clock,
+  CheckCircle2, AlertCircle, Leaf,
+  Bell, Search, Clock,
   Shield, Lightbulb, Target, Cpu, Gauge,
-  ChevronDown, X, Eye, Download, RefreshCw,
-  Layers, Sparkles, BatteryCharging, Thermometer
+  X, Download, RefreshCw,
+  Layers, Sparkles, BatteryCharging
 } from 'lucide-react';
 import { fetchRoomAnalysis, uploadScheduleCSV } from '../services/api';
 

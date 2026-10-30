@@ -7,6 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 Role = Literal["owner", "admin", "manager", "staff"]
 
 
+def validate_strong_password(value: str) -> str:
+    checks = {
+        "12 or more characters": len(value) >= 12,
+        "a lowercase letter": any("a" <= char <= "z" for char in value),
+        "an uppercase letter": any("A" <= char <= "Z" for char in value),
+        "a number": any("0" <= char <= "9" for char in value),
+        "a symbol": any(not char.isspace() and (not char.isascii() or not char.isalnum()) for char in value),
+    }
+    missing = [requirement for requirement, passed in checks.items() if not passed]
+    if missing:
+        raise ValueError("Password must include " + ", ".join(missing) + ".")
+    return value
+
+
 class OrganizationView(BaseModel):
     id: int
     name: str
@@ -61,17 +75,32 @@ class RegisterRequest(BaseModel):
     organization_type: str = Field(default="Other", min_length=2, max_length=60)
     state: str = Field(default="Maharashtra", min_length=2, max_length=80)
 
+    @field_validator("password")
+    @classmethod
+    def password_meets_strength_rules(cls, value):
+        return validate_strong_password(value)
+
 
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=128)
 
 
+class GoogleLoginRequest(BaseModel):
+    credential: str = Field(min_length=100, max_length=8192)
+
+
+class GoogleRegisterRequest(GoogleLoginRequest):
+    organization_name: str = Field(min_length=2, max_length=120)
+    organization_type: str = Field(default="Other", min_length=2, max_length=60)
+    state: str = Field(default="Maharashtra", min_length=2, max_length=80)
+
+
 class InvitationRegisterRequest(BaseModel):
     token: str = Field(min_length=24, max_length=128)
     email: str = Field(min_length=3, max_length=254)
     full_name: str = Field(min_length=2, max_length=120)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class InvitationCreate(BaseModel):
@@ -173,7 +202,7 @@ class RoomBase(BaseModel):
 
 
 class RoomCreate(RoomBase):
-    pass
+    appliances: list[ApplianceBase] = Field(default_factory=list, max_length=50)
 
 
 class RoomSiteUpdate(BaseModel):

@@ -1,11 +1,16 @@
 from datetime import datetime, timedelta
 import hashlib
+import os
 import re
 import secrets
 import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from google.auth import exceptions as google_auth_exceptions
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import id_token
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -32,6 +37,25 @@ def normalized_email(value: str) -> str:
     if not EMAIL_PATTERN.fullmatch(email):
         raise HTTPException(status_code=422, detail="Enter a valid email address.")
     return email
+
+
+def verified_google_identity(credential: str) -> dict:
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured for this deployment.")
+    try:
+        claims = id_token.verify_oauth2_token(credential, GoogleAuthRequest(), client_id)
+    except google_auth_exceptions.TransportError:
+        raise HTTPException(status_code=503, detail="Google could not verify the sign-in right now. Try again.")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Google sign-in could not be verified. Please try again.")
+
+    if claims.get("aud") != client_id or claims.get("iss") not in {"accounts.google.com", "https://accounts.google.com"}:
+        raise HTTPException(status_code=401, detail="Google sign-in could not be verified. Please try again.")
+    if claims.get("email_verified") is not True or not claims.get("sub") or not claims.get("email"):
+        raise HTTPException(status_code=401, detail="Use a Google account with a verified email address.")
+    claims["email"] = normalized_email(claims["email"])
+    return claims
 
 
 def session_payload(user: models.User, membership: models.Membership) -> dict:
@@ -88,24 +112,10 @@ def register(payload: schemas.RegisterRequest, response: Response, db: Session =
         user = models.User(email=email, full_name=payload.full_name.strip(), password_hash=hash_password(payload.password))
         db.add_all([organization, user])
         db.flush()
-        primary_site = models.Site(
-            organization_id=organization.id,
-            name="Main site",
-            state=organization.state,
-        )
-        db.add(primary_site)
-        db.flush()
         membership = models.Membership(user_id=user.id, organization_id=organization.id, role="owner", is_active=True)
         db.add(membership)
-        # One owner creates a workspace. Any facilities from the old single-tenant
-        # installation are adopted once, then become tenant-scoped as usual.
-        db.query(models.Room).filter(models.Room.organization_id.is_(None)).update(
-            {
-                models.Room.organization_id: organization.id,
-                models.Room.site_id: primary_site.id,
-            },
-            synchronize_session=False,
-        )
+        # A new workspace starts empty. Legacy unscoped facilities must never be
+        # assigned to a newly registering organization.
         db.commit()
         db.refresh(user)
         db.refresh(membership)
@@ -152,6 +162,10 @@ def register_from_invitation(payload: schemas.InvitationRegisterRequest, respons
         if membership and membership.is_active:
             raise HTTPException(status_code=409, detail="This account already belongs to this workspace.")
     else:
+        try:
+            schemas.validate_strong_password(payload.password)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
         user = models.User(email=email, full_name=payload.full_name.strip(), password_hash=hash_password(payload.password))
         db.add(user)
         db.flush()
@@ -178,6 +192,94 @@ def register_from_invitation(payload: schemas.InvitationRegisterRequest, respons
         raise
 
     set_session_cookie(response, user.id, organization.id)
+    return session_payload(user, membership)
+
+
+@router.post("/google/register", response_model=schemas.SessionView, status_code=status.HTTP_201_CREATED)
+def register_with_google(payload: schemas.GoogleRegisterRequest, response: Response, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:google-register"
+    _rate_limit_login(rate_key)
+    claims = verified_google_identity(payload.credential)
+    email = claims["email"]
+    google_sub = claims["sub"]
+    if db.query(models.User.id).filter(
+        (models.User.email == email) | (models.User.google_sub == google_sub)
+    ).first():
+        raise HTTPException(status_code=409, detail="This Google account already has a workspace. Switch to Sign in.")
+
+    full_name = str(claims.get("name") or email.split("@", 1)[0]).strip()[:120]
+    organization = models.Organization(
+        name=payload.organization_name.strip(),
+        organization_type=payload.organization_type.strip(),
+        state=payload.state.strip(),
+    )
+    user = models.User(
+        email=email,
+        full_name=full_name or email.split("@", 1)[0],
+        password_hash=hash_password(secrets.token_urlsafe(48)),
+        google_sub=google_sub,
+    )
+    try:
+        db.add_all([organization, user])
+        db.flush()
+        membership = models.Membership(user_id=user.id, organization_id=organization.id, role="owner", is_active=True)
+        db.add(membership)
+        db.commit()
+        db.refresh(user)
+        db.refresh(membership)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This Google account already has a workspace. Switch to Sign in.")
+    except Exception:
+        db.rollback()
+        raise
+
+    _clear_login_limit(rate_key)
+    set_session_cookie(response, user.id, organization.id)
+    return session_payload(user, membership)
+
+
+@router.post("/google/login", response_model=schemas.SessionView)
+def login_with_google(payload: schemas.GoogleLoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:google-login"
+    _rate_limit_login(rate_key)
+    claims = verified_google_identity(payload.credential)
+    user = db.query(models.User).filter(models.User.google_sub == claims["sub"]).first()
+    if not user:
+        user = db.query(models.User).filter(models.User.email == claims["email"]).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="No workspace uses this Google account yet. Choose Create workspace to sign up.")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="This account is disabled. Ask a workspace owner for help.")
+        if user.google_sub and user.google_sub != claims["sub"]:
+            raise HTTPException(status_code=409, detail="This email is linked to a different Google account. Sign in with your existing method.")
+        if not user.google_sub:
+            user.google_sub = claims["sub"]
+            try:
+                db.commit()
+                db.refresh(user)
+            except IntegrityError:
+                db.rollback()
+                user = db.query(models.User).filter(models.User.google_sub == claims["sub"]).first()
+                if not user:
+                    raise HTTPException(status_code=409, detail="This Google account could not be linked. Try again.")
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="This account is disabled. Ask a workspace owner for help.")
+    membership = (
+        db.query(models.Membership)
+        .options(joinedload(models.Membership.organization))
+        .filter(models.Membership.user_id == user.id, models.Membership.is_active.is_(True))
+        .order_by(models.Membership.id.asc())
+        .first()
+    )
+    if not membership:
+        raise HTTPException(status_code=403, detail="No active workspace is assigned to this account. Use a workspace invitation.")
+
+    _clear_login_limit(rate_key)
+    set_session_cookie(response, user.id, membership.organization_id)
     return session_payload(user, membership)
 
 

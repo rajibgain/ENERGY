@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import EnergyWorkspace from './components/EnergyWorkspace';
 import AuthScreen from './components/AuthScreen';
-import { checkBackendHealth, clearSiteSchematic as clearSiteSchematicRequest, createSite as createSiteRequest, fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, fetchSites, moveRoomToSite as moveRoomToSiteRequest, signOut, updateOrganization as saveOrganization, updateSite as updateSiteRequest, uploadSiteSchematic as uploadSiteSchematicRequest } from './services/api';
+import { checkBackendHealth, clearSiteSchematic as clearSiteSchematicRequest, createRoom as createRoomRequest, createSite as createSiteRequest, fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, fetchSites, moveRoomToSite as moveRoomToSiteRequest, signOut, updateOrganization as saveOrganization, updateSite as updateSiteRequest, uploadSiteSchematic as uploadSiteSchematicRequest } from './services/api';
 import { calculateDemoDashboard, DEMO_BILLS, DEMO_ROOMS, DEMO_SESSION, DEMO_SITES } from './data/demoWorkspace';
 
 const EMPTY_DASHBOARD = {
@@ -87,9 +87,13 @@ export default function App() {
       setLastUpdated(new Date());
       setRefreshing(false);
     }
-  }, [session?.isDemo, session?.organization?.id, session?.organization?.tariff_rate, session?.organization?.carbon_factor, session?.organization?.operating_hours, role]);
+  }, [session, role]);
 
-  useEffect(() => { if (session && !session.isDemo) loadData(); }, [session?.organization?.id, session?.isDemo, role, loadData]);
+  useEffect(() => {
+    if (!session || session.isDemo) return undefined;
+    const request = window.setTimeout(() => { void loadData(); }, 0);
+    return () => window.clearTimeout(request);
+  }, [session, role, loadData]);
 
   const handleOrganizationChange = async (next) => {
     if (session?.isDemo) {
@@ -127,6 +131,22 @@ export default function App() {
       : await createSiteRequest(payload);
     setSites((current) => [...current, site].sort((a, b) => a.name.localeCompare(b.name)));
     return site;
+  };
+
+  const handleCreateRoom = async (payload) => {
+    const roomId = Date.now();
+    const room = isDemo
+      ? {
+        ...payload,
+        id: roomId,
+        site_id: Number(payload.site_id),
+        appliances: payload.appliances.map((appliance, index) => ({ ...appliance, id: `${roomId}-${index}`, room_id: roomId })),
+        schedules: [],
+      }
+      : await createRoomRequest(payload);
+    setRooms((current) => [...current, room]);
+    if (isDemo) setDashboard(calculateDemoDashboard([...rooms, room], session.organization));
+    return room;
   };
 
   const handleUpdateSite = async (siteId, payload) => {
@@ -201,6 +221,7 @@ export default function App() {
       organization={organization}
       onOrganizationChange={handleOrganizationChange}
       sites={sites}
+      onCreateRoom={handleCreateRoom}
       onCreateSite={handleCreateSite}
       onUpdateSite={handleUpdateSite}
       onUploadSchematic={handleUploadSchematic}

@@ -42,12 +42,19 @@ def initialize_database():
                 connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN bbps_partner VARCHAR(80) NOT NULL DEFAULT 'Setu'")
             if "payment_portal_url" not in organization_columns:
                 connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN payment_portal_url VARCHAR(500) NOT NULL DEFAULT ''")
+    if "users" in inspector.get_table_names():
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        with engine.begin() as connection:
+            if "google_sub" not in user_columns:
+                connection.exec_driver_sql("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)")
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub ON users (google_sub)"
+            )
     if "rooms" in inspector.get_table_names():
         room_columns = {column["name"] for column in inspector.get_columns("rooms")}
         with engine.begin() as connection:
             if "organization_id" not in room_columns:
-                # Existing facility data is assigned to the first organization that registers.
-                # Until then it remains inaccessible through the tenant-scoped API.
+                # Legacy rows remain unscoped until an administrator deliberately migrates them.
                 connection.exec_driver_sql(
                     "ALTER TABLE rooms ADD COLUMN organization_id INTEGER REFERENCES organizations(id)"
                 )
@@ -56,7 +63,8 @@ def initialize_database():
                     "ALTER TABLE rooms ADD COLUMN site_id INTEGER REFERENCES sites(id)"
                 )
 
-        # Give each existing organization a primary site and attach its old rooms.
+        # Attach old rooms only when they belong to an organization. New workspaces
+        # stay empty, and unscoped legacy rows are never adopted by a new account.
         with SessionLocal() as db:
             for organization in db.query(models.Organization).all():
                 site = (
@@ -65,7 +73,11 @@ def initialize_database():
                     .order_by(models.Site.id)
                     .first()
                 )
-                if not site:
+                has_unassigned_rooms = db.query(models.Room.id).filter(
+                    models.Room.organization_id == organization.id,
+                    models.Room.site_id.is_(None),
+                ).first()
+                if not site and has_unassigned_rooms:
                     site = models.Site(
                         organization_id=organization.id,
                         name="Main site",
@@ -73,8 +85,9 @@ def initialize_database():
                     )
                     db.add(site)
                     db.flush()
-                db.query(models.Room).filter(
-                    models.Room.organization_id == organization.id,
-                    models.Room.site_id.is_(None),
-                ).update({models.Room.site_id: site.id}, synchronize_session=False)
+                if site:
+                    db.query(models.Room).filter(
+                        models.Room.organization_id == organization.id,
+                        models.Room.site_id.is_(None),
+                    ).update({models.Room.site_id: site.id}, synchronize_session=False)
             db.commit()
