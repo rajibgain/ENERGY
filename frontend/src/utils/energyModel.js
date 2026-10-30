@@ -44,13 +44,42 @@ export function scheduledHoursPerDay(schedules = []) {
   return weeklyMinutes / 60 / 7;
 }
 
+function applianceLoads(appliances = []) {
+  return appliances.reduce((loads, appliance) => {
+    const ratedWatts = Math.max(0, Number(appliance.power_watts || 0));
+    const loadFactor = Math.min(1, Math.max(0.05, Number(appliance.load_factor ?? 1)));
+    const standbyWatts = Math.min(ratedWatts, Math.max(0, Number(appliance.standby_watts || 0)));
+    loads.ratedKw += ratedWatts / 1000;
+    loads.activeKw += ratedWatts * loadFactor / 1000;
+    loads.standbyKw += standbyWatts / 1000;
+    return loads;
+  }, { ratedKw: 0, activeKw: 0, standbyKw: 0 });
+}
+
+export function resolveEffectiveTariffRate(organization = {}) {
+  const flatRate = Number(organization.tariff_rate ?? organization.flatTariffRate ?? organization.tariffRate ?? 0);
+  if ((organization.tariff_mode ?? organization.tariffMode) !== 'time_of_use') return Number.isFinite(flatRate) ? flatRate : 0;
+
+  const peakRate = Number(organization.peak_tariff_rate ?? organization.peakTariffRate ?? flatRate);
+  const offpeakRate = Number(organization.offpeak_tariff_rate ?? organization.offpeakTariffRate ?? flatRate);
+  const peakStart = timeToMinutes(organization.peak_start_time ?? organization.peakStartTime ?? '17:00');
+  const peakEnd = timeToMinutes(organization.peak_end_time ?? organization.peakEndTime ?? '22:00');
+  const peakMinutes = peakStart === peakEnd ? 0 : peakEnd > peakStart ? peakEnd - peakStart : 1440 - peakStart + peakEnd;
+  const blended = (peakRate * peakMinutes + offpeakRate * (1440 - peakMinutes)) / 1440;
+  return Number.isFinite(blended) ? blended : (Number.isFinite(flatRate) ? flatRate : 0);
+}
+
 export function roomEstimate(room, tariffRate = 8, carbonFactor = 0.82, operatingHours = 8) {
-  const connectedKw = (room.appliances || []).reduce((total, appliance) => total + Number(appliance.power_watts || 0), 0) / 1000;
+  const loads = applianceLoads(room.appliances || []);
   const scheduledHours = scheduledHoursPerDay(room.schedules || []);
   const idleHours = Math.max(0, operatingHours - scheduledHours);
-  const wasteKwh = connectedKw * idleHours;
+  const avoidableKw = Math.max(0, loads.activeKw - loads.standbyKw);
+  const wasteKwh = avoidableKw * idleHours;
   return {
-    connectedKw,
+    connectedKw: loads.ratedKw,
+    activeLoadKw: loads.activeKw,
+    standbyLoadKw: loads.standbyKw,
+    modeledEnergyKwh: loads.activeKw * scheduledHours + loads.standbyKw * idleHours,
     scheduledHours,
     idleHours,
     wasteKwh,
@@ -60,7 +89,7 @@ export function roomEstimate(room, tariffRate = 8, carbonFactor = 0.82, operatin
 }
 
 export function calculateWorkspaceDashboard(rooms, organization) {
-  const tariff = Number(organization.tariff_rate ?? organization.tariffRate) || 0;
+  const tariff = resolveEffectiveTariffRate(organization);
   const carbonFactor = Number(organization.carbon_factor ?? organization.carbonFactor) || 0;
   const operatingHours = Number(organization.operating_hours ?? organization.operatingHours) || 0;
   const totals = rooms.reduce((summary, room) => {

@@ -11,7 +11,7 @@
 
 SyncSpace is a web application concept for understanding and managing energy use across a campus or multi-building organization. It brings facility zones, equipment ratings, operating schedules, electricity records and staff access into one workspace. A transparent schedule-based model estimates a zone's potential daily energy gap, related cost and associated emissions. The action center ranks zones for review so an energy manager can decide where to investigate first.
 
-The project includes an interactive sample campus for demonstration, an organization-scoped locations map with block and room views, optional building-plan uploads, state-based electricity-provider choices for India, CSV schedule import, organization roles and a bill ledger. The sample data is illustrative. The application does not read live meters or initiate electricity payments.
+The project includes an interactive sample campus for demonstration, an organization-scoped locations map with block and room views, optional building-plan uploads, state-based electricity-provider choices for India, CSV schedule import, What-if and rooftop-solar planning tools, portfolio CSV reporting, organization roles and a bill ledger. The sample data is illustrative. The application does not read live meters or initiate electricity payments.
 
 ## Problem statement
 
@@ -35,7 +35,7 @@ Organizations often manage utility bills, building schedules, equipment lists an
 - **Action center:** up to three zones ranked by schedule-based estimated impact, each linking to equipment and timetable details.
 - **Facility zones:** searchable table of equipment load, schedule entries, estimated gap and review status.
 - **Locations and building plans:** map the sites in one organization, set a pin by clicking the map or pasting a full Google Maps link, move rooms between its sites, group rooms by block, and optionally upload a PNG, JPG, WEBP or PDF schematic. Site coordinates and uploaded plans stay private to that organization.
-- **New workspace setup:** new organizations begin with no sample facilities or generated energy figures. Add a location, create zones with equipment ratings, and import schedules to see estimates based on the entered data.
+- **New workspace setup:** new organizations begin with no sample facilities or generated energy figures. Add a location, create zones with equipment ratings, load factors and standby watts, and import schedules to see estimates based on the entered data.
 - **Schedule import:** download a CSV template and import schedules to a selected zone.
 - **Electricity ledger:** add and export bill records, track due and paid states, and record an external payment reference.
 - **India provider directory:** select a state or union territory, then choose a principal utility or enter a provider name from the bill.
@@ -43,12 +43,15 @@ Organizations often manage utility bills, building schedules, equipment lists an
 - **Account security:** Google Identity Services sign-in with server-verified ID tokens, plus password confirmation and strength requirements for password-based signup.
 - **Assignment demo:** explore a sample West Bengal campus, sample WBSEDCL and CESC records, settings and team roles without creating an account.
 - **Project method:** in-app explanation of inputs, equations and model limits.
+- **What-if tools:** compare schedule reductions, LED power changes and cooling setpoint assumptions; payback needs a user-entered project cost.
+- **Rooftop solar:** estimate Kolkata system size, generation and bill-offset value from user-entered roof area and a 4.5–5.0 kWh/kWp/day yield range; payback needs an installer quote.
+- **Portfolio report:** download assumptions, portfolio totals, the top three zones, and detailed zone estimates as CSV.
 
 ## Energy model and methodology
 
 ### Inputs
 
-- Rated power for each item of equipment, in watts.
+- Rated power, load factor and standby watts for each equipment item.
 - Facility operating baseline, in hours per day.
 - Weekly schedules assigned to each facility zone.
 - Organization electricity tariff, in rupees per kWh.
@@ -56,18 +59,20 @@ Organizations often manage utility bills, building schedules, equipment lists an
 
 ### Calculations
 
-1. **Connected load (kW)** = sum of equipment ratings in watts ÷ 1,000.
-2. **Average scheduled hours per day** = merged schedule duration across a week ÷ 7. Overlapping schedule entries are merged so a time window is not counted twice.
-3. **Potential daily energy gap (kWh/day)** = connected load (kW) × max(0, operating baseline (hours/day) − scheduled hours (hours/day)).
-4. **Potential daily cost (₹/day)** = potential daily energy gap × configured tariff (₹/kWh).
-5. **Emissions associated with the modeled gap (kg CO₂e/day)** = potential daily energy gap × configured emissions factor (kg CO₂e/kWh).
-6. **Schedule coverage (%)** = average scheduled hours ÷ operating baseline × 100, capped at 100% for display and portfolio averaging.
+1. **Connected capacity (kW)** = sum of equipment ratings in watts ÷ 1,000.
+2. **Estimated active load (kW)** = sum of (rated watts × load factor) ÷ 1,000.
+3. **Estimated standby load (kW)** = sum of standby watts ÷ 1,000.
+4. **Average scheduled hours per day** = merged schedule duration across a week ÷ 7. Overlapping schedule entries are merged so a time window is not counted twice.
+5. **Potential daily energy gap (kWh/day)** = max(0, active load − standby load) × max(0, operating baseline − scheduled hours).
+6. **Potential daily cost (₹/day)** = potential daily energy gap × configured effective tariff (₹/kWh).
+7. **Emissions associated with the modeled gap (kg CO₂e/day)** = potential daily energy gap × configured emissions factor (kg CO₂e/kWh).
+8. **Schedule coverage (%)** = average scheduled hours ÷ operating baseline × 100, capped at 100% for display and portfolio averaging.
 
 The dashboard's emissions metric refers to the modeled schedule gap. It is not the organization's total greenhouse-gas inventory. The tariff and emissions factor are workspace settings and must be supplied or checked for the organization and period being studied.
 
 ### Interpretation and limitations
 
-The calculation assumes connected equipment could draw its full rated load during unscheduled hours. Real equipment may cycle, modulate, be switched off, or operate outside the timetable. A schedule gap is therefore a **planning signal**, not proof of waste or a verified saving. Validate it with meter data, occupancy information and an on-site check before taking action or reporting savings.
+The calculation uses the entered load factor for estimated active draw and compares it with the entered standby level outside schedule windows. Defaults of load factor 1.0 and standby 0 W preserve the previous rated-load assumption. Real equipment may cycle, modulate, be switched off, or operate outside the timetable. A schedule gap is therefore a **planning signal**, not proof of waste or a verified saving. Validate it with meter data, occupancy information and an on-site check before taking action or reporting savings. Time-of-use tariff calculations are blended by peak/off-peak period duration because the schedule-gap model does not distribute gap energy by hour.
 
 The sample campus, map pins and bills are fabricated for demonstration. The map uses OpenStreetMap imagery. Uploaded schematics are limited to 10 MB and are stored in the configured application database. Real bill fetching, meter telemetry, building-control integration and payment confirmation require separately configured provider integrations. The bill portal feature opens a provider-hosted payment page; it does not move funds.
 

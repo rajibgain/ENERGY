@@ -3,6 +3,7 @@ import EnergyWorkspace from './components/EnergyWorkspace';
 import AuthScreen from './components/AuthScreen';
 import { checkBackendHealth, clearSiteSchematic as clearSiteSchematicRequest, createRoom as createRoomRequest, createSite as createSiteRequest, fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, fetchSites, moveRoomToSite as moveRoomToSiteRequest, signOut, updateOrganization as saveOrganization, updateSite as updateSiteRequest, uploadSiteSchematic as uploadSiteSchematicRequest } from './services/api';
 import { calculateDemoDashboard, DEMO_BILLS, DEMO_ROOMS, DEMO_SESSION, DEMO_SITES } from './data/demoWorkspace';
+import { resolveEffectiveTariffRate } from './utils/energyModel';
 
 const EMPTY_DASHBOARD = {
   total_rooms_analyzed: 0,
@@ -17,7 +18,13 @@ const mapOrganization = (org) => ({
   name: org.name,
   type: org.organization_type,
   state: org.state,
-  tariffRate: org.tariff_rate,
+  tariffRate: Number(org.effective_tariff_rate ?? resolveEffectiveTariffRate(org)),
+  flatTariffRate: Number(org.tariff_rate ?? 8),
+  tariffMode: org.tariff_mode || 'flat',
+  peakTariffRate: Number(org.peak_tariff_rate ?? org.tariff_rate ?? 8),
+  offpeakTariffRate: Number(org.offpeak_tariff_rate ?? org.tariff_rate ?? 8),
+  peakStartTime: org.peak_start_time || '17:00:00',
+  peakEndTime: org.peak_end_time || '22:00:00',
   carbonFactor: org.carbon_factor,
   operatingHours: org.operating_hours,
   bbpsPartner: org.bbps_partner || 'Setu',
@@ -102,12 +109,18 @@ export default function App() {
         name: next.name,
         organization_type: next.type,
         state: next.state,
-        tariff_rate: Number(next.tariffRate),
+        tariff_rate: Number(next.flatTariffRate ?? next.tariffRate),
+        tariff_mode: next.tariffMode || 'flat',
+        peak_tariff_rate: Number(next.peakTariffRate ?? next.tariffRate),
+        offpeak_tariff_rate: Number(next.offpeakTariffRate ?? next.tariffRate),
+        peak_start_time: next.peakStartTime || '17:00:00',
+        peak_end_time: next.peakEndTime || '22:00:00',
         carbon_factor: Number(next.carbonFactor),
         operating_hours: Number(next.operatingHours),
         bbps_partner: next.bbpsPartner,
         payment_portal_url: next.paymentPortalUrl,
       };
+      updated.effective_tariff_rate = resolveEffectiveTariffRate(updated);
       setSession((current) => current ? { ...current, organization: updated } : current);
       setDashboard(calculateDemoDashboard(rooms, updated));
       return updated;
@@ -116,7 +129,12 @@ export default function App() {
       name: next.name,
       organization_type: next.type,
       state: next.state,
-      tariff_rate: Number(next.tariffRate),
+      tariff_rate: Number(next.flatTariffRate ?? next.tariffRate),
+      tariff_mode: next.tariffMode || 'flat',
+      peak_tariff_rate: Number(next.peakTariffRate ?? next.tariffRate),
+      offpeak_tariff_rate: Number(next.offpeakTariffRate ?? next.tariffRate),
+      peak_start_time: next.peakStartTime || '17:00:00',
+      peak_end_time: next.peakEndTime || '22:00:00',
       carbon_factor: Number(next.carbonFactor),
       operating_hours: Number(next.operatingHours),
       bbps_partner: next.bbpsPartner,

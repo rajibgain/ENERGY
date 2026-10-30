@@ -47,6 +47,9 @@ The main workspace brings these tasks together:
 - Review portfolio-level energy-gap, cost, emissions, and schedule-coverage estimates.
 - Rank a small number of zones for attention based on their modeled schedule gap.
 - View expected hourly equipment demand calculated from schedules; this chart is not a meter trace.
+- Compare schedule, lighting, and cooling scenarios with editable assumptions and optional user-entered project cost/payback.
+- Estimate rooftop solar size, generation, bill-offset value, and quote-based simple payback.
+- Export one portfolio CSV report with totals, the top three ranked zones, and detailed zone estimates.
 - Create organization locations and place them on an OpenStreetMap-backed map.
 - Set a location pin by clicking a map or pasting a full Google Maps URL with readable coordinates.
 - Group zones into blocks and locations, move a zone between locations, and inspect its equipment and timetable.
@@ -90,7 +93,7 @@ New organizations start with **no sample locations, zones, schedules, or fabrica
     └── src/
         ├── App.jsx                 Session, demo, and workspace state
         ├── main.jsx                React entry point
-        ├── components/             Screens, charts, maps, forms, advisor
+        ├── components/             Screens, charts, maps, forms, advisor, scenarios
         ├── data/                   Provider directory and demo-only records
         ├── services/api.js         HTTP client and API functions
         ├── utils/energyModel.js    Browser-side estimate calculations
@@ -169,13 +172,13 @@ erDiagram
 
 | Entity | Purpose and important fields |
 |---|---|
-| `Organization` | Workspace name, type, state, tariff, carbon factor, operating-hours baseline, preferred BBPS partner name, and optional HTTPS portal URL. |
+| `Organization` | Workspace name, type, state, flat or time-of-use tariff settings, carbon factor, operating-hours baseline, preferred BBPS partner name, and optional HTTPS portal URL. |
 | `User` | Unique email, full name, scrypt password hash, optional unique Google subject, and active/disabled flag. |
 | `Membership` | Connects a user and organization with a role and active flag. The user/organization pair is unique. |
 | `Invitation` | Organization, target email, role, hashed token, creator, expiry, and accepted timestamp. |
 | `Site` | Organization-owned location with address/city/state, optional latitude/longitude, and optional schematic metadata and binary file. |
 | `Room` | A facility zone with organization ID, optional site ID, name, and block. The UI often calls these zones; the API/model calls them rooms. |
-| `Appliance` | Equipment name and rated power in watts, attached to a room. |
+| `Appliance` | Equipment name, rated power in watts, load factor, and standby watts, attached to a room. Existing records default to load factor 1.0 and standby 0 W to preserve previous estimates. |
 | `Schedule` | Day label and start/end times, attached to a room. |
 | `BillRecord` | Organization-owned biller, state, site label, reference, amount, due date, status, paid date/reference, and creator. |
 
@@ -185,38 +188,51 @@ There is no dedicated device telemetry, meter-reading, action-history, or paymen
 
 ### Inputs
 
-- Equipment rated power in watts.
-- A zone's weekly operating timetable.
+- Equipment rated power in watts, an operating load factor, and standby watts.
+- A zone's weekly timetable.
 - The organization's operating-hours baseline in hours/day.
-- The organization's tariff in rupees per kWh.
+- A flat tariff or peak/off-peak rates with a daily peak time window.
 - The organization's emissions factor in kg CO₂e per kWh.
 
 ### Equations
 
-1. **Connected load (kW)** = sum of equipment ratings (W) ÷ 1,000.
-2. **Scheduled hours/day** = total non-overlapping scheduled minutes for the week ÷ 60 ÷ 7.
-3. **Idle hours/day** = max(0, operating-hours baseline − scheduled hours/day).
-4. **Modeled energy gap (kWh/day)** = connected load (kW) × idle hours/day.
-5. **Modeled cost (₹/day)** = modeled energy gap × tariff (₹/kWh).
-6. **Emissions associated with the modeled gap (kg CO₂e/day)** = modeled energy gap × emissions factor (kg CO₂e/kWh).
-7. **Schedule coverage (%)** = scheduled hours/day ÷ operating-hours baseline × 100, capped at 100% for display/aggregation.
+1. **Connected capacity (kW)** = sum of equipment rated watts ÷ 1,000.
+2. **Estimated active load (kW)** = sum of (rated watts × load factor) ÷ 1,000.
+3. **Estimated standby load (kW)** = sum of standby watts ÷ 1,000.
+4. **Scheduled hours/day** = non-overlapping weekly timetable minutes ÷ 60 ÷ 7.
+5. **Idle hours/day** = max(0, operating-hours baseline − scheduled hours/day).
+6. **Modeled idle-time gap (kWh/day)** = max(0, active load − standby load) × idle hours.
+7. **Gap cost (₹/day)** = modeled gap × effective tariff (₹/kWh).
+8. **Associated emissions (kg CO₂e/day)** = modeled gap × configured emissions factor.
+9. **Modeled scheduled energy (kWh/day)** = (active load × scheduled hours) + (standby load × idle hours).
+10. **Schedule coverage (%)** = scheduled hours ÷ operating-hours baseline × 100, capped at 100%.
+
+Load factor represents estimated typical active draw divided by rated power and is constrained to 0.05–1.0. Standby watts must be non-negative and no higher than the estimated active draw. New equipment forms start at load factor 1.0 and standby 0 W; these conservative defaults preserve the older rated-load estimate and should be replaced with equipment data when available. Existing database records receive the same values when the application starts after this update.
 
 Overlapping timetable entries are merged before calculating scheduled time. The full weekday names (Monday through Sunday) are recognized, as are `Everyday`, `Daily`, and `All days` (case-insensitive). An end time earlier than a start time represents an overnight interval. Equal start and end times contribute no duration. A schedule longer than the configured baseline produces zero idle hours; the percentage score is capped at 100.
 
 ### Worked example
 
-Suppose a zone has 4,500 W of rated equipment (4.5 kW), six average scheduled hours/day, and an eight-hour baseline. With the default ₹8/kWh tariff and 0.82 kg CO₂e/kWh factor:
+Suppose a zone has 4,500 W rated equipment with a combined load factor of 0.60 and 90 W of declared standby load, six average scheduled hours/day, and an eight-hour baseline. With a flat tariff of ₹8/kWh and 0.82 kg CO₂e/kWh factor:
 
+- Connected capacity = 4.5 kW; estimated active load = 2.7 kW; standby load = 0.09 kW.
 - Idle hours/day = 8 − 6 = 2.
-- Modeled gap = 4.5 × 2 = **9 kWh/day**.
-- Modeled cost = 9 × 8 = **₹72/day**.
-- Associated emissions = 9 × 0.82 = **7.38 kg CO₂e/day**.
+- Modeled gap = (2.7 − 0.09) × 2 = **5.22 kWh/day**.
+- Modeled cost = 5.22 × 8 = **₹41.76/day**.
+- Associated emissions = 5.22 × 0.82 = **4.28 kg CO₂e/day**.
+- Modeled scheduled energy = (2.7 × 6) + (0.09 × 2) = **16.38 kWh/day**.
 
-### Interpretation
+### Tariff behavior
 
-The model assumes connected equipment could draw its full rated load during hours outside the submitted timetable. Actual loads may be lower because equipment cycles, modulates, is switched off, or operates differently from the entered schedule. A result is a **planning estimate**, not verified waste, actual consumption, an emissions inventory, or guaranteed savings. Validate with interval meter data, occupancy, operating procedures, and a site inspection before acting or reporting a saving.
+Flat mode uses the configured average rate. Time-of-use mode accepts peak/off-peak rates and a peak start/end time. Because the current schedule-gap calculation has no hourly distribution for idle-time energy, the dashboard uses a **daily duration-weighted blended tariff**: `(peak rate × peak minutes + off-peak rate × remaining minutes) ÷ 1,440`. If peak start and end are equal, the peak period is treated as zero minutes. This is an approximation, not a bill reconstruction or time-resolved tariff calculation. The original flat rate remains stored as the fallback mode.
 
-The hourly schedule profile is also a model: it spreads rated load over the entered timetable. It is not a live electrical demand curve.
+### What-if and solar scenarios
+
+The What-if tool estimates changes against the current schedule model. Reducing schedule hours shifts the selected active hours to declared standby. Lighting and cooling savings apply only to equipment whose names match the relevant category; their reduction percentages are editable planning assumptions. Cooling savings are calculated from the positive difference between current and scenario setpoints multiplied by a user-adjustable assumed saving per °C, capped at a 50% reduction. The simple payback is only shown when the user enters a one-time cost and modeled monthly savings are positive. These scenarios do not change stored schedules or control equipment.
+
+The rooftop solar estimator uses the user-entered roof area, usable-area percentage, and area density in m²/kWp to estimate system size. Its editable yield defaults to 4.75 kWh/kWp/day, centered in the 4.5–5.0 range supplied for Kolkata. It estimates a 30-day generation and bill-offset value at the workspace effective tariff. It assumes every generated kWh offsets grid purchases; exports, self-consumption timing, shading, roof orientation/tilt, structural suitability, local approvals, system losses, and actual project prices are not modeled. Payback requires an installer quote per kWp entered by the user. The 9.3 m²/kWp initial area-density value is a broad planning reference derived from the U.S. Department of Energy consumer guidance of about 100 sq ft per kW; users should replace it with an installer design appropriate to their site and module choice ([DOE consumer guide](https://www1.eere.energy.gov/solar/pdfs/43844.pdf)).
+
+The hourly schedule profile uses estimated active load spread over the timetable. It is not a live electrical demand curve. A result is a **planning estimate**, not measured consumption, verified waste, a formal emissions inventory, or guaranteed savings. Actual loads may be lower due to cycling, modulation, shutdowns, or operating conditions. The project currently accepts schedule CSVs only and does not connect an IoT meter. Validate through interval-meter data, occupancy, operating procedures, and site inspection before reporting savings.
 
 ## 8. Feature walkthrough
 
@@ -236,7 +252,7 @@ The portfolio map displays mapped sites and groups zones by building/block. A zo
 
 ### 8.4 Zones, equipment, and timetables
 
-Create a zone with a name, block, optional site selection (the UI selects a site), and equipment items with rated watts. Then import one or more timetable rows. Once equipment and schedules are saved, the zone and portfolio estimates can be calculated. The zone detail view displays equipment, schedule entries, an estimated daily gap, and a shortcut to import a timetable.
+Create a zone with a name, block, optional site selection (the UI selects a site), and equipment items with rated watts, load factor, and standby watts. Then import one or more timetable rows. Once equipment and schedules are saved, the zone and portfolio estimates can be calculated. The zone detail view displays equipment assumptions, schedule entries, an estimated daily gap, and a shortcut to import a timetable. New equipment starts at load factor 1.0 and standby 0 W so existing assumptions are not replaced with invented device behavior.
 
 ### 8.5 Schedule CSV import
 
@@ -269,6 +285,14 @@ The floating **Ask AI** entry point offers energy, cost, and planning prompts. I
 
 The sample campus, locations, schedules, bills, and team are defined in `frontend/src/data/demoWorkspace.js`. The demo avoids the API and uses in-memory browser state. Its figures and coordinates are fabricated for demonstration and are separate from live organization records.
 
+### 8.10 What-if, rooftop solar, and report export
+
+**What-if tools** compare the current schedule baseline with per-zone runtime reductions and user-selected lighting/cooling assumptions. An appliance name must match a lighting or cooling keyword for those controls to include it. A schedule must exist for the zone. Daily and 30-day savings use the effective tariff and configured carbon factor; simple payback requires a user-entered cost.
+
+**Rooftop solar** takes total roof area, the share considered usable, area per kWp, and a daily yield between 4.5 and 5.0 kWh/kWp for the Kolkata planning view. The default yield is 4.75. The initial 9.3 m²/kWp area density is editable, and bill value assumes all generation displaces grid purchases. Enter an installer quote per kWp to calculate simple payback. This is a screening estimate, not a site design.
+
+**Report CSV** is available to every signed-in workspace role. It includes organization assumptions and generation time, portfolio gap/cost/emissions/schedule totals, the top three zones by modeled gap, and all zone estimates. CSV cells are escaped to reduce spreadsheet formula execution risk.
+
 ## 9. API reference
 
 All product routes are under `/api/v1`; the API client appends this prefix to the configured API root. `GET /` is a basic service health response. The API also serves OpenAPI documentation at `/docs` when running locally.
@@ -284,7 +308,7 @@ All product routes are under `/api/v1`; the API client appends this prefix to th
 | `POST /auth/register-invitation` | Accept a valid invitation and join the organization. | Public with a single-use invitation token. |
 | `POST /auth/logout` | Clear the browser's session cookie. | Session. |
 | `GET /auth/me` | Return current user, organization, and role. | Any active member. |
-| `PATCH /auth/organization` | Update organization settings. | Owner/admin. |
+| `PATCH /auth/organization` | Update organization identity, flat or time-of-use tariff settings, carbon factor, operating baseline, or bill portal settings. | Owner/admin. |
 | `GET /auth/members` | List workspace memberships. | Owner/admin. |
 | `PATCH /auth/members/{membership_id}` | Change a permitted team role. | Owner/admin, with owner/admin restrictions. |
 | `DELETE /auth/members/{membership_id}` | Suspend a membership. | Owner/admin, with owner/admin restrictions. |
@@ -329,10 +353,10 @@ The route schemas in `backend/schemas.py` define the authoritative request const
 |---|---|
 | Account email | 3–254 characters and checked against an email pattern. |
 | New account password | 12–128 characters; requires lowercase, uppercase, ASCII digit, and symbol. Password login accepts the existing stored password as entered. |
-| Organization | Name 2–120 characters; type 2–60; state 2–80; tariff 0–1,000; carbon factor 0–3; operating hours greater than 0 and up to 24. |
+| Organization | Name 2–120 characters; type 2–60; state 2–80; flat/peak/off-peak rates 0–1,000; tariff mode is flat or time-of-use; carbon factor 0–3; operating hours greater than 0 and up to 24. |
 | Site | Name 2–120; address up to 240; city up to 100; state 2–80; latitude −90 to 90 and longitude −180 to 180. Either both coordinates or neither. |
 | Zone | Name and block required, each up to 120; site ID optional at schema level. |
-| Equipment | Name 1–120; power greater than 0 and up to 10,000,000 W; up to 50 items on a single zone-creation request. |
+| Equipment | Name 1–120; power greater than 0 and up to 10,000,000 W; load factor 0.05–1.0; standby watts 0 through estimated active load; up to 50 items on a single zone-creation request. |
 | Timetable | Day label 2–24; valid time values. CSV file maximum 10 MiB. |
 | Building plan | PNG/JPG/WEBP/PDF, extension and content signature checked, maximum 10 MiB. |
 | Bill record | Positive amount up to ₹1,000,000,000; biller/state and due date required. |
@@ -523,7 +547,10 @@ GitHub Pages alone can show the demo but cannot provide saved account data. The 
 - Database schema evolution is handled by startup code rather than versioned migrations.
 - Invitations are displayed for manual sharing; email delivery is not built in.
 - No password reset or email verification workflow is included.
-- The schedule model is deliberately simple and assumes full rated load outside schedule windows.
+- Schedule-gap estimates depend on entered load factors and standby watts and are not meter-verified.
+- The time-of-use tariff is duration-weighted because modeled gap energy has no hourly distribution.
+- What-if results depend on equipment-name matching and editable scenario assumptions.
+- Rooftop solar results are screening estimates; they do not model export credits or installer-specific design.
 
 ### Practical roadmap
 
@@ -541,10 +568,12 @@ GitHub Pages alone can show the demo but cannot provide saved account data. The 
 | **Organization / workspace** | The tenant boundary for a company's sites, zones, team, settings, and bills. |
 | **Site / location** | A physical facility that belongs to an organization and may have a map pin and building plan. |
 | **Room / zone** | A modeled facility area. The UI uses “zone”; the backend entity and route names use “room.” |
-| **Connected load** | The sum of entered equipment ratings converted from watts to kilowatts. It is not a measured instantaneous load. |
+| **Connected load** | The sum of entered equipment ratings converted from watts to kilowatts. It is installed capacity, not a measured instantaneous load. |
+| **Load factor** | The estimated active draw divided by the equipment's rated watts. |
+| **Standby load** | User-entered equipment draw in standby or idle mode. |
 | **Schedule coverage** | Average weekly timetable duration per day for a zone. |
-| **Modeled energy gap** | Connected kW multiplied by baseline hours not covered by schedule; a planning estimate. |
-| **Tariff** | Organization setting in ₹ per kWh used to translate the modeled gap into an estimated cost. |
+| **Modeled energy gap** | The positive difference between estimated active and standby kW multiplied by baseline hours not covered by the schedule; a planning estimate. |
+| **Effective tariff** | Flat rate or the duration-weighted peak/off-peak estimate used to calculate cost. |
 | **Carbon factor** | Organization setting in kg CO₂e per kWh used to translate the modeled gap into estimated associated emissions. |
 | **API root** | Base HTTPS/HTTP URL for FastAPI, for example `http://127.0.0.1:8000`; the frontend adds `/api/v1`. |
 | **Google client ID** | Public identifier for the web OAuth client. It is not the Google client secret. |

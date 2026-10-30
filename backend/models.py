@@ -27,6 +27,11 @@ class Organization(Base):
     organization_type = Column(String(60), nullable=False, default="Other")
     state = Column(String(80), nullable=False, default="Maharashtra")
     tariff_rate = Column(Float, nullable=False, default=8.0)
+    tariff_mode = Column(String(20), nullable=False, default="flat")
+    peak_tariff_rate = Column(Float, nullable=False, default=8.0)
+    offpeak_tariff_rate = Column(Float, nullable=False, default=8.0)
+    peak_start_time = Column(Time, nullable=False, default=lambda: datetime.strptime("17:00", "%H:%M").time())
+    peak_end_time = Column(Time, nullable=False, default=lambda: datetime.strptime("22:00", "%H:%M").time())
     carbon_factor = Column(Float, nullable=False, default=0.82)
     operating_hours = Column(Float, nullable=False, default=8.0)
     bbps_partner = Column(String(80), nullable=False, default="Setu")
@@ -34,6 +39,15 @@ class Organization(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     memberships = relationship("Membership", back_populates="organization", cascade="all, delete-orphan")
+
+    @property
+    def effective_tariff_rate(self):
+        if self.tariff_mode != "time_of_use":
+            return self.tariff_rate
+        start = self.peak_start_time.hour * 60 + self.peak_start_time.minute
+        end = self.peak_end_time.hour * 60 + self.peak_end_time.minute
+        peak_minutes = 0 if start == end else (end - start) % (24 * 60)
+        return (self.peak_tariff_rate * peak_minutes + self.offpeak_tariff_rate * (24 * 60 - peak_minutes)) / (24 * 60)
 
 
 class User(Base):
@@ -120,11 +134,17 @@ class Room(Base):
 
 class Appliance(Base):
     __tablename__ = "appliances"
+    __table_args__ = (
+        CheckConstraint("load_factor >= 0.05 AND load_factor <= 1.0", name="ck_appliance_load_factor"),
+        CheckConstraint("standby_watts >= 0 AND standby_watts <= power_watts * load_factor", name="ck_appliance_standby_watts"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     power_watts = Column(Float, nullable=False)
+    load_factor = Column(Float, nullable=False, default=1.0)
+    standby_watts = Column(Float, nullable=False, default=0.0)
 
     room = relationship("Room", back_populates="appliances")
 

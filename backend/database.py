@@ -42,6 +42,25 @@ def initialize_database():
                 connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN bbps_partner VARCHAR(80) NOT NULL DEFAULT 'Setu'")
             if "payment_portal_url" not in organization_columns:
                 connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN payment_portal_url VARCHAR(500) NOT NULL DEFAULT ''")
+            if "tariff_mode" not in organization_columns:
+                connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN tariff_mode VARCHAR(20) NOT NULL DEFAULT 'flat'")
+            if "peak_tariff_rate" not in organization_columns:
+                connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN peak_tariff_rate FLOAT NOT NULL DEFAULT 8.0")
+                connection.exec_driver_sql("UPDATE organizations SET peak_tariff_rate = tariff_rate")
+            if "offpeak_tariff_rate" not in organization_columns:
+                connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN offpeak_tariff_rate FLOAT NOT NULL DEFAULT 8.0")
+                connection.exec_driver_sql("UPDATE organizations SET offpeak_tariff_rate = tariff_rate")
+            if "peak_start_time" not in organization_columns:
+                connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN peak_start_time TIME NOT NULL DEFAULT '17:00:00'")
+            if "peak_end_time" not in organization_columns:
+                connection.exec_driver_sql("ALTER TABLE organizations ADD COLUMN peak_end_time TIME NOT NULL DEFAULT '22:00:00'")
+    if "appliances" in inspector.get_table_names():
+        appliance_columns = {column["name"] for column in inspector.get_columns("appliances")}
+        with engine.begin() as connection:
+            if "load_factor" not in appliance_columns:
+                connection.exec_driver_sql("ALTER TABLE appliances ADD COLUMN load_factor FLOAT NOT NULL DEFAULT 1.0")
+            if "standby_watts" not in appliance_columns:
+                connection.exec_driver_sql("ALTER TABLE appliances ADD COLUMN standby_watts FLOAT NOT NULL DEFAULT 0.0")
     if "users" in inspector.get_table_names():
         user_columns = {column["name"] for column in inspector.get_columns("users")}
         with engine.begin() as connection:

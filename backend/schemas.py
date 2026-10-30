@@ -27,6 +27,12 @@ class OrganizationView(BaseModel):
     organization_type: str
     state: str
     tariff_rate: float
+    tariff_mode: Literal["flat", "time_of_use"] = "flat"
+    peak_tariff_rate: float = 8.0
+    offpeak_tariff_rate: float = 8.0
+    peak_start_time: time = time(17, 0)
+    peak_end_time: time = time(22, 0)
+    effective_tariff_rate: float = 8.0
     carbon_factor: float
     operating_hours: float
     bbps_partner: str = "Setu"
@@ -40,6 +46,11 @@ class OrganizationUpdate(BaseModel):
     organization_type: Optional[str] = Field(default=None, min_length=2, max_length=60)
     state: Optional[str] = Field(default=None, min_length=2, max_length=80)
     tariff_rate: Optional[float] = Field(default=None, ge=0, le=1000)
+    tariff_mode: Optional[Literal["flat", "time_of_use"]] = None
+    peak_tariff_rate: Optional[float] = Field(default=None, ge=0, le=1000)
+    offpeak_tariff_rate: Optional[float] = Field(default=None, ge=0, le=1000)
+    peak_start_time: Optional[time] = None
+    peak_end_time: Optional[time] = None
     carbon_factor: Optional[float] = Field(default=None, ge=0, le=3)
     operating_hours: Optional[float] = Field(default=None, gt=0, le=24)
     bbps_partner: Optional[str] = Field(default=None, min_length=2, max_length=80)
@@ -182,6 +193,14 @@ class MemberRoleUpdate(BaseModel):
 class ApplianceBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     power_watts: float = Field(gt=0, le=10_000_000)
+    load_factor: float = Field(default=1.0, ge=0.05, le=1.0)
+    standby_watts: float = Field(default=0.0, ge=0, le=10_000_000)
+
+    @model_validator(mode="after")
+    def standby_cannot_exceed_rated_power(self):
+        if self.standby_watts > self.power_watts * self.load_factor:
+            raise ValueError("Standby watts cannot exceed the estimated active load.")
+        return self
 
 
 class ApplianceCreate(ApplianceBase):

@@ -50,9 +50,10 @@ def calculate_room_waste(
     Calculates the energy and financial waste of a room.
     Defaults are demo assumptions; live workspaces should set local tariff and operating hours.
     """
-    # 1. Get total Appliance kW (Watts divided by 1000)
-    total_watts = sum(app.power_watts for app in room.appliances)
-    total_kw = total_watts / 1000.0
+    # Keep rated capacity separate from estimated operating and standby loads.
+    total_kw = sum(app.power_watts for app in room.appliances) / 1000.0
+    active_kw = sum(app.power_watts * (app.load_factor if app.load_factor is not None else 1.0) for app in room.appliances) / 1000.0
+    standby_kw = sum(app.standby_watts or 0.0 for app in room.appliances) / 1000.0
 
     # 2. Calculate average daily schedule coverage, merging overlapping entries.
     scheduled_hours = _scheduled_hours_per_day(room.schedules)
@@ -63,7 +64,8 @@ def calculate_room_waste(
         empty_hours = 0.0  # Can't have negative waste if classes exceed normal hours
 
     # 4. Calculate Environmental & Financial Metrics
-    wasted_kwh = total_kw * empty_hours
+    wasted_kwh = max(0.0, active_kw - standby_kw) * empty_hours
+    modeled_energy_kwh = active_kw * scheduled_hours + standby_kw * empty_hours
     financial_loss = wasted_kwh * tariff_rate
     co2_emissions = wasted_kwh * carbon_factor
 
@@ -74,10 +76,13 @@ def calculate_room_waste(
     return {
         "room_name": room.name,
         "total_load_kw": total_kw,
+        "active_load_kw": active_kw,
+        "standby_load_kw": standby_kw,
         "total_scheduled_hours": round(scheduled_hours, 2),
         "total_empty_hours": round(empty_hours, 2),
         "daily_wasted_hours": round(empty_hours, 2),
         "wasted_energy_kwh": round(wasted_kwh, 2),
+        "modeled_energy_kwh": round(modeled_energy_kwh, 2),
         "financial_loss_inr": round(financial_loss, 2),
         "carbon_footprint_kg": round(co2_emissions, 2),
         "efficiency_score": round(efficiency_score, 1)

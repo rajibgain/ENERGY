@@ -273,7 +273,7 @@ def analyze_room_waste(
         raise HTTPException(status_code=404, detail="Facility zone not found.")
     return services.calculate_room_waste(
         room=room,
-        tariff_rate=tariff_rate if tariff_rate is not None else context.organization.tariff_rate,
+        tariff_rate=tariff_rate if tariff_rate is not None else context.organization.effective_tariff_rate,
         daily_op_hours=operating_hours if operating_hours is not None else context.organization.operating_hours,
         carbon_factor=carbon_factor if carbon_factor is not None else context.organization.carbon_factor,
     )
@@ -288,7 +288,7 @@ def get_campus_dashboard(
     db: Session = Depends(get_db),
 ):
     all_rooms = crud.get_rooms(db, organization_id=context.organization.id)
-    tariff = tariff_rate if tariff_rate is not None else context.organization.tariff_rate
+    tariff = tariff_rate if tariff_rate is not None else context.organization.effective_tariff_rate
     emissions_factor = carbon_factor if carbon_factor is not None else context.organization.carbon_factor
     daily_hours = operating_hours if operating_hours is not None else context.organization.operating_hours
 

@@ -9,17 +9,19 @@ import {
 import { archiveBillRecord, createBillRecord, createInvitation, errorMessage, fetchInvitations, fetchMembers, fetchRoomAnalysis, recordBillPayment, revokeInvitation, suspendMember, updateMember, uploadScheduleCSV } from '../services/api';
 import { ELECTRICITY_DIRECTORY_SOURCES, INDIAN_STATES, STATE_ELECTRICITY_PROVIDERS } from '../data/electricityProviders';
 import { DEMO_TEAM } from '../data/demoWorkspace';
-import { roomEstimate, timeToMinutes } from '../utils/energyModel';
+import { resolveEffectiveTariffRate, roomEstimate, timeToMinutes } from '../utils/energyModel';
 import PortfolioMap from './PortfolioMap';
 import EnergyAdvisor from './EnergyAdvisor';
+import ScenarioTools from './ScenarioTools';
 
 const NAV = [
   { id: 'overview', label: 'Overview', number: '01' },
   { id: 'locations', label: 'Locations', number: '02' },
   { id: 'performance', label: 'Energy profile', number: '03' },
-  { id: 'zones', label: 'Zones', number: '04' },
-  { id: 'imports', label: 'Schedule import', number: '05' },
-  { id: 'bills', label: 'Bill payments', number: '06' },
+  { id: 'simulator', label: 'What-if tools', number: '04' },
+  { id: 'zones', label: 'Zones', number: '05' },
+  { id: 'imports', label: 'Schedule import', number: '06' },
+  { id: 'bills', label: 'Bill payments', number: '07' },
 ];
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const ORGANIZATION_TYPES = ['Company', 'Commercial office', 'Education', 'Healthcare', 'Manufacturing', 'Retail', 'Hospitality', 'Logistics', 'Property portfolio', 'Public sector', 'Nonprofit', 'Other'];
@@ -42,7 +44,7 @@ function buildProfile(rooms, mode) {
     let scheduledKw = 0;
     for (const day of days) {
       for (const room of rooms) {
-        const roomKw = roomEstimate(room).connectedKw;
+        const roomKw = roomEstimate(room).activeLoadKw;
         let activeMinutes = 0;
         for (const schedule of room.schedules || []) {
           if (!scheduleForDay(schedule, day)) continue;
@@ -66,7 +68,11 @@ function makeLine(points, valueKey, chart) {
 }
 
 function downloadCsv(filename, rows) {
-  const csv = rows.map((row) => row.map((value) => '"' + String(value ?? '').replaceAll('"', '""') + '"').join(',')).join('\r\n');
+  const csv = rows.map((row) => row.map((value) => {
+    let cell = String(value ?? '');
+    if (/^[=+@\-]/.test(cell)) cell = `'${cell}`;
+    return '"' + cell.replaceAll('"', '""') + '"';
+  }).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
@@ -178,7 +184,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   const [organizationModal, setOrganizationModal] = useState(false);
   const [organizationDraft, setOrganizationDraft] = useState(organization);
   const [zoneModal, setZoneModal] = useState(false);
-  const [zoneDraft, setZoneDraft] = useState({ name: '', block: '', site_id: '', appliances: [{ name: '', power_watts: '' }] });
+  const [zoneDraft, setZoneDraft] = useState({ name: '', block: '', site_id: '', appliances: [{ name: '', power_watts: '', load_factor: '1', standby_watts: '0' }] });
   const [zoneBusy, setZoneBusy] = useState(false);
   const [zoneError, setZoneError] = useState('');
   const [billModal, setBillModal] = useState('');
@@ -268,14 +274,14 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
       goToSection('locations');
       return;
     }
-    setZoneDraft({ name: '', block: '', site_id: String(sites[0].id), appliances: [{ name: '', power_watts: '' }] });
+    setZoneDraft({ name: '', block: '', site_id: String(sites[0].id), appliances: [{ name: '', power_watts: '', load_factor: '1', standby_watts: '0' }] });
     setZoneError('');
     setZoneModal(true);
   };
 
   const addEquipmentRow = () => setZoneDraft((current) => ({
     ...current,
-    appliances: [...current.appliances, { name: '', power_watts: '' }],
+    appliances: [...current.appliances, { name: '', power_watts: '', load_factor: '1', standby_watts: '0' }],
   }));
 
   const updateEquipmentRow = (index, field, value) => setZoneDraft((current) => ({
@@ -291,8 +297,8 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   const saveZone = async (event) => {
     event.preventDefault();
     setZoneError('');
-    if (!zoneDraft.name.trim() || !zoneDraft.block.trim() || !zoneDraft.site_id || zoneDraft.appliances.some((appliance) => !appliance.name.trim() || !(Number(appliance.power_watts) > 0))) {
-      setZoneError('Add a zone name, building, location, and valid rated power for each equipment item.');
+    if (!zoneDraft.name.trim() || !zoneDraft.block.trim() || !zoneDraft.site_id || zoneDraft.appliances.some((appliance) => !appliance.name.trim() || !(Number(appliance.power_watts) > 0) || Number(appliance.load_factor) < 0.05 || Number(appliance.load_factor) > 1 || Number(appliance.standby_watts) < 0 || Number(appliance.standby_watts) > Number(appliance.power_watts) * Number(appliance.load_factor))) {
+      setZoneError('Add valid equipment data. Load factor must be 0.05–1, and standby watts cannot exceed estimated active load.');
       return;
     }
     setZoneBusy(true);
@@ -301,7 +307,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         name: zoneDraft.name.trim(),
         block: zoneDraft.block.trim(),
         site_id: Number(zoneDraft.site_id),
-        appliances: zoneDraft.appliances.map((appliance) => ({ name: appliance.name.trim(), power_watts: Number(appliance.power_watts) })),
+        appliances: zoneDraft.appliances.map((appliance) => ({ name: appliance.name.trim(), power_watts: Number(appliance.power_watts), load_factor: Number(appliance.load_factor), standby_watts: Number(appliance.standby_watts) })),
       });
       if (!isDemo) await onRefresh();
       setZoneModal(false);
@@ -314,13 +320,50 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   };
 
   const exportRooms = () => {
-    const rows = [['Zone', 'Building', 'Connected load (kW)', 'Scheduled hours', `Idle hours (${organization.operatingHours}h baseline)`, 'Estimated waste (kWh/day)', `Estimated cost (INR/day at ${organization.tariffRate}/kWh)`, 'Estimated carbon (kg/day)']];
+    const rows = [['Zone', 'Building', 'Rated capacity (kW)', 'Active load (kW)', 'Standby load (kW)', 'Scheduled hours/day', `Idle hours (${organization.operatingHours}h baseline)`, 'Modeled energy (kWh/day)', 'Estimated gap (kWh/day)', `Estimated cost (INR/day at ${organization.tariffRate}/kWh)`, 'Estimated carbon (kg/day)']];
     for (const room of rooms) {
       const estimate = roomEstimate(room, organization.tariffRate, organization.carbonFactor, organization.operatingHours);
-      rows.push([room.name, room.block, number(estimate.connectedKw, 2), number(estimate.scheduledHours, 2), number(estimate.idleHours, 2), number(estimate.wasteKwh, 2), number(estimate.cost, 2), number(estimate.carbon, 2)]);
+      rows.push([room.name, room.block, number(estimate.connectedKw, 2), number(estimate.activeLoadKw, 2), number(estimate.standbyLoadKw, 2), number(estimate.scheduledHours, 2), number(estimate.idleHours, 2), number(estimate.modeledEnergyKwh, 2), number(estimate.wasteKwh, 2), number(estimate.cost, 2), number(estimate.carbon, 2)]);
     }
     downloadCsv('syncspace-energy-estimates.csv', rows);
     setToast('Energy estimates exported.');
+  };
+
+  const exportPortfolioReport = () => {
+    const rows = [
+      ['SyncSpace portfolio energy report'],
+      ['Organization', organization.name],
+      ['Generated at (UTC)', new Date().toISOString()],
+      ['Tariff mode', organization.tariffMode === 'time_of_use' ? 'Time of use · blended duration-weighted estimate' : 'Flat'],
+      ['Flat tariff (INR/kWh)', organization.flatTariffRate],
+      ...(organization.tariffMode === 'time_of_use' ? [
+        ['Peak rate (INR/kWh)', organization.peakTariffRate],
+        ['Off-peak rate (INR/kWh)', organization.offpeakTariffRate],
+        ['Peak time window', `${String(organization.peakStartTime).slice(0, 5)}–${String(organization.peakEndTime).slice(0, 5)}`],
+      ] : []),
+      ['Effective tariff (INR/kWh)', number(organization.tariffRate, 2)],
+      ['Grid emissions factor (kg CO2e/kWh)', organization.carbonFactor],
+      ['Daily operating baseline (hours)', organization.operatingHours],
+      [],
+      ['Portfolio totals'],
+      ['Zones analyzed', rooms.length],
+      ['Estimated idle-time gap (kWh/day)', dashboard?.campus_wasted_energy_kwh ?? 0],
+      ['Estimated gap cost (INR/day)', dashboard?.campus_financial_loss_inr ?? 0],
+      ['Estimated gap emissions (kg CO2e/day)', dashboard?.campus_carbon_footprint_kg ?? 0],
+      ['Schedule coverage score (%)', dashboard?.campus_efficiency_score ?? 0],
+      [],
+      ['Top 3 zones by modeled daily gap'],
+      ['Rank', 'Zone', 'Building', 'Estimated gap (kWh/day)', 'Estimated cost (INR/day)', 'Estimated emissions (kg CO2e/day)'],
+    ];
+    if (!rankedRooms.length) rows.push(['', 'No zones to rank']);
+    else rankedRooms.slice(0, 3).forEach((room, index) => rows.push([index + 1, room.name, room.block, number(room.estimate.wasteKwh, 2), number(room.estimate.cost, 2), number(room.estimate.carbon, 2)]));
+    rows.push([], ['Zone estimates'], ['Zone', 'Building', 'Rated capacity (kW)', 'Active load (kW)', 'Standby load (kW)', 'Scheduled hours/day', 'Idle hours/day', 'Modeled energy (kWh/day)', 'Estimated gap (kWh/day)', 'Estimated cost (INR/day)', 'Estimated emissions (kg CO2e/day)']);
+    for (const room of rankedRooms) {
+      const estimate = room.estimate;
+      rows.push([room.name, room.block, number(estimate.connectedKw, 2), number(estimate.activeLoadKw, 2), number(estimate.standbyLoadKw, 2), number(estimate.scheduledHours, 2), number(estimate.idleHours, 2), number(estimate.modeledEnergyKwh, 2), number(estimate.wasteKwh, 2), number(estimate.cost, 2), number(estimate.carbon, 2)]);
+    }
+    downloadCsv('syncspace-portfolio-report.csv', rows);
+    setToast('Portfolio report CSV exported.');
   };
 
   const downloadTemplate = () => {
@@ -391,7 +434,16 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
 
   const saveOrganization = async (event) => {
     event.preventDefault();
-    const next = { ...organizationDraft, tariffRate: Number(organizationDraft.tariffRate), carbonFactor: Number(organizationDraft.carbonFactor), operatingHours: Number(organizationDraft.operatingHours) };
+    const next = {
+      ...organizationDraft,
+      flatTariffRate: Number(organizationDraft.flatTariffRate ?? organizationDraft.tariffRate),
+      peakTariffRate: Number(organizationDraft.peakTariffRate ?? organizationDraft.flatTariffRate ?? organizationDraft.tariffRate),
+      offpeakTariffRate: Number(organizationDraft.offpeakTariffRate ?? organizationDraft.flatTariffRate ?? organizationDraft.tariffRate),
+      peakStartTime: String(organizationDraft.peakStartTime || '17:00').slice(0, 5),
+      peakEndTime: String(organizationDraft.peakEndTime || '22:00').slice(0, 5),
+      carbonFactor: Number(organizationDraft.carbonFactor),
+      operatingHours: Number(organizationDraft.operatingHours),
+    };
     try {
       await onOrganizationChange(next);
       setOrganizationModal(false);
@@ -603,6 +655,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         <header className="ss-topbar">
           <div className="ss-breadcrumb"><span>{organization.name}</span><ChevronDown size={13} /><span className="ss-breadcrumb-sep">/</span><span>Portfolio overview</span></div>
           <div className="ss-topbar-right">
+            <button className="ss-org-switch" onClick={exportPortfolioReport}><Download size={14} /><span>Report CSV</span></button>
             {canManageWorkspace && <button className="ss-org-switch" onClick={openOrganizationSettings}><Building2 size={14} /><span>Settings</span></button>}
             {canManageWorkspace && <button className="ss-org-switch" onClick={openTeam}><Users size={14} /><span>Team</span></button>}
             <span className={'ss-connection' + (isOnline ? ' is-online' : '') + (isDemo ? ' is-demo' : '')}><i />{isDemo ? 'DEMO MODE' : isOnline ? 'API connected' : 'Offline'}</span>
@@ -666,7 +719,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
               <div className="ss-orbit-art" aria-hidden="true"><span className="ss-orbit ss-orbit-one" /><span className="ss-orbit ss-orbit-two" /><span className="ss-orbit ss-orbit-three" /><i /><b /></div>
               <div className="ss-primary-index">01 <span>/ DAILY</span></div>
             </article>
-            <Metric icon={CircleDollarSign} label="Estimated cost" value={hasFacilityData ? '₹' + number(dashboard?.campus_financial_loss_inr, 0) : '—'} unit="" detail={hasFacilityData ? `Per day · at ₹${organization.tariffRate}/kWh` : 'Add facility data to estimate cost'} />
+            <Metric icon={CircleDollarSign} label="Estimated cost" value={hasFacilityData ? '₹' + number(dashboard?.campus_financial_loss_inr, 0) : '—'} unit="" detail={hasFacilityData ? `Per day · ${organization.tariffMode === 'time_of_use' ? 'blended ' : ''}at ₹${number(organization.tariffRate, 2)}/kWh` : 'Add facility data to estimate cost'} />
             <Metric icon={Leaf} label="Modeled waste emissions" value={hasFacilityData ? number(dashboard?.campus_carbon_footprint_kg, 1) : '—'} unit={hasFacilityData ? 'kg' : ''} detail={hasFacilityData ? `CO₂ tied to the estimated gap · factor ${organization.carbonFactor}` : 'Add facility data to estimate emissions'} />
             <article className="ss-metric ss-card ss-efficiency">
               <div className="ss-metric-top"><span className="ss-metric-icon"><ShieldCheck size={16} strokeWidth={1.7} /></span><span className="ss-metric-label">Schedule coverage</span><MoreHorizontal size={16} className="ss-muted-icon" aria-hidden="true" /></div>
@@ -696,9 +749,11 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
               <div className="ss-card-heading ss-opportunity-heading"><div><div className="ss-kicker"><span className="ss-kicker-dot" /> RULE-BASED ACTION CENTER</div><h2>Good places to start.</h2></div><span className="ss-opportunity-icon"><Sun size={17} /></span></div>
               <p className="ss-opportunity-copy">Zones with the largest schedule-based energy gaps, ranked by estimated daily impact.</p>
               {actionOpportunities.length ? <div className="ss-action-list">{actionOpportunities.map((room, index) => <button className="ss-action-item" key={room.id} onClick={() => { setSelectedRoom(room); setRoomAnalysis(null); goToSection('zones'); }}><span className="ss-action-rank">0{index + 1}</span><span className="ss-action-copy"><strong>Review schedule</strong><small>{room.name} · {room.block}</small></span><span className="ss-action-impact"><strong>{number(room.estimate.wasteKwh, 1)} <small>kWh/d</small></strong><em>₹{number(room.estimate.cost, 0)}/day</em></span><ArrowUpRight size={14} /></button>)}</div> : <div className="ss-opportunity-empty"><span className="ss-empty-mark"><Check size={19} /></span><strong>{rooms.length ? 'No gaps modeled.' : 'No facility data yet.'}</strong><p>{rooms.length ? 'Add or update operating schedules and equipment ratings to build the action list.' : 'Create a zone with your equipment, then import its timetable to get started.'}</p>{canManageFacilities && rooms.length > 0 && <button className="ss-text-action" onClick={() => goToSection('imports')}>Import a schedule <ArrowRight size={14} /></button>}</div>}
-              <div className="ss-opportunity-foot"><span><Clock3 size={12} /> Rated load × unscheduled hours · not meter-verified</span><button className="ss-methodology-link" onClick={() => setMethodologyOpen(true)}>How it works <ArrowRight size={11} /></button></div>
+              <div className="ss-opportunity-foot"><span><Clock3 size={12} /> Active less standby load × idle hours · not meter-verified</span><button className="ss-methodology-link" onClick={() => setMethodologyOpen(true)}>How it works <ArrowRight size={11} /></button></div>
             </aside>
           </div>
+
+          <ScenarioTools rooms={rooms} organization={organization} />
 
           <section id="zones" data-section className="ss-zones-section">
             <div className="ss-section-caption"><span>THE BUILDING BLOCKS</span><span>02 — 04</span></div>
@@ -728,7 +783,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
                   </tr>;
                 })}
               </tbody></table></div>}
-              <div className="ss-table-foot"><span>Waste is modelled using a {organization.operatingHours}-hour daily baseline, at ₹{number(organization.tariffRate, 2)}/kWh.</span><span>SELECT A ZONE <ArrowRight size={12} /></span></div>
+              <div className="ss-table-foot"><span>Gap uses a {organization.operatingHours}-hour baseline and {organization.tariffMode === 'time_of_use' ? 'blended ' : ''}₹{number(organization.tariffRate, 2)}/kWh.</span><span>SELECT A ZONE <ArrowRight size={12} /></span></div>
             </div>
           </section>
 
@@ -783,7 +838,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         </div>
       </main>
 
-      <nav className="ss-mobile-nav" aria-label="Mobile navigation" style={{ gridTemplateColumns: `repeat(${visibleNav.length}, minmax(0, 1fr))` }}>{visibleNav.map((item) => <button key={item.id} onClick={() => goToSection(item.id)} className={activeSection === item.id ? 'is-active' : ''}><span>{item.number}</span>{item.id === 'imports' ? 'Import' : item.id === 'bills' ? 'Bills' : item.label}</button>)}</nav>
+      <nav className="ss-mobile-nav" aria-label="Mobile navigation" style={{ gridTemplateColumns: `repeat(${visibleNav.length}, minmax(0, 1fr))` }}>{visibleNav.map((item) => <button key={item.id} onClick={() => goToSection(item.id)} className={activeSection === item.id ? 'is-active' : ''}><span>{item.number}</span>{item.id === 'imports' ? 'Import' : item.id === 'bills' ? 'Bills' : item.id === 'simulator' ? 'Scenarios' : item.label}</button>)}</nav>
 
       {zoneModal && <div className="ss-modal-backdrop ss-form-backdrop" onClick={() => !zoneBusy && setZoneModal(false)}>
         <section className="ss-form-modal ss-zone-modal" role="dialog" aria-modal="true" aria-labelledby="ss-zone-create-title" onClick={(event) => event.stopPropagation()}>
@@ -794,15 +849,17 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
             <label className="ss-form-field"><span>BLOCK / BUILDING</span><input required minLength="1" maxLength="120" value={zoneDraft.block} onChange={(event) => setZoneDraft({ ...zoneDraft, block: event.target.value })} placeholder="Block A" /></label>
             <label className="ss-form-field ss-field-wide"><span>LOCATION</span><select required value={zoneDraft.site_id} onChange={(event) => setZoneDraft({ ...zoneDraft, site_id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
             <div className="ss-zone-equipment ss-field-wide">
-              <div className="ss-zone-equipment-head"><span>EQUIPMENT & RATED POWER</span><button type="button" disabled={zoneDraft.appliances.length >= 50} onClick={addEquipmentRow}><Plus size={12} /> Add item</button></div>
+              <div className="ss-zone-equipment-head"><span>EQUIPMENT LOAD MODEL</span><button type="button" disabled={zoneDraft.appliances.length >= 50} onClick={addEquipmentRow}><Plus size={12} /> Add item</button></div>
               {zoneDraft.appliances.map((appliance, index) => <div className="ss-zone-equipment-row" key={index}>
                 <label className="ss-form-field"><span>{index === 0 ? 'EQUIPMENT NAME' : `EQUIPMENT ${index + 1}`}</span><input required minLength="1" maxLength="120" value={appliance.name} onChange={(event) => updateEquipmentRow(index, 'name', event.target.value)} placeholder="Air conditioner" /></label>
                 <label className="ss-form-field"><span>RATED POWER · W</span><input type="number" required min="0.01" max="10000000" step="any" value={appliance.power_watts} onChange={(event) => updateEquipmentRow(index, 'power_watts', event.target.value)} placeholder="1500" /></label>
+                <label className="ss-form-field"><span>LOAD FACTOR · 0.05–1</span><input type="number" required min="0.05" max="1" step="0.05" value={appliance.load_factor} onChange={(event) => updateEquipmentRow(index, 'load_factor', event.target.value)} title="Typical operating watts divided by rated watts" /></label>
+                <label className="ss-form-field"><span>STANDBY · W</span><input type="number" required min="0" max="10000000" step="any" value={appliance.standby_watts} onChange={(event) => updateEquipmentRow(index, 'standby_watts', event.target.value)} title="Estimated watts while idle or in standby" /></label>
                 {zoneDraft.appliances.length > 1 && <button type="button" className="ss-zone-equipment-remove" aria-label={`Remove equipment ${index + 1}`} onClick={() => removeEquipmentRow(index)}><X size={14} /></button>}
               </div>)}
             </div>
             {zoneError && <div className="ss-auth-error ss-field-wide" role="alert">{zoneError}</div>}
-            <div className="ss-form-note ss-field-wide"><Activity size={14} /> These are equipment-based planning estimates. Import a timetable to calculate the schedule gap; no readings are fabricated.</div>
+            <div className="ss-form-note ss-field-wide"><Activity size={14} /> Load factor estimates typical active draw ÷ rated watts. Standby cannot exceed estimated active draw. Defaults of 1.0 and 0 W retain the rated-load assumption until you enter site data.</div>
             <div className="ss-form-actions ss-field-wide"><button type="button" className="ss-button ss-button-quiet" disabled={zoneBusy} onClick={() => setZoneModal(false)}>Cancel</button><button type="submit" className="ss-button ss-button-primary" disabled={zoneBusy}>{zoneBusy ? 'Saving…' : 'Add zone'} <ArrowRight size={14} /></button></div>
           </form>
         </section>
@@ -816,10 +873,18 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
             <label className="ss-form-field ss-field-wide"><span>ORGANIZATION NAME</span><input value={organizationDraft.name} maxLength="64" required onChange={(event) => setOrganizationDraft({ ...organizationDraft, name: event.target.value })} placeholder="Your organization" /></label>
             <label className="ss-form-field"><span>ORGANIZATION TYPE</span><select value={organizationDraft.type} onChange={(event) => setOrganizationDraft({ ...organizationDraft, type: event.target.value })}>{ORGANIZATION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
             <label className="ss-form-field"><span>PRIMARY STATE / TERRITORY</span><select value={organizationDraft.state} onChange={(event) => setOrganizationDraft({ ...organizationDraft, state: event.target.value })}>{INDIAN_STATES.map((state) => <option key={state}>{state}</option>)}</select></label>
-            <label className="ss-form-field"><span>AVERAGE TARIFF · ₹/kWh</span><input type="number" min="0" max="1000" step="0.01" required value={organizationDraft.tariffRate} onChange={(event) => setOrganizationDraft({ ...organizationDraft, tariffRate: event.target.value })} /></label>
+            <label className="ss-form-field"><span>TARIFF STRUCTURE</span><select value={organizationDraft.tariffMode || 'flat'} onChange={(event) => setOrganizationDraft({ ...organizationDraft, tariffMode: event.target.value })}><option value="flat">Flat average rate</option><option value="time_of_use">Time of use · blended estimate</option></select></label>
+            <label className="ss-form-field"><span>FLAT TARIFF · ₹/kWh</span><input type="number" min="0" max="1000" step="0.01" required value={organizationDraft.flatTariffRate ?? organizationDraft.tariffRate} onChange={(event) => setOrganizationDraft({ ...organizationDraft, flatTariffRate: event.target.value })} /></label>
+            {organizationDraft.tariffMode === 'time_of_use' && <>
+              <label className="ss-form-field"><span>PEAK RATE · ₹/kWh</span><input type="number" min="0" max="1000" step="0.01" required value={organizationDraft.peakTariffRate} onChange={(event) => setOrganizationDraft({ ...organizationDraft, peakTariffRate: event.target.value })} /></label>
+              <label className="ss-form-field"><span>OFF-PEAK RATE · ₹/kWh</span><input type="number" min="0" max="1000" step="0.01" required value={organizationDraft.offpeakTariffRate} onChange={(event) => setOrganizationDraft({ ...organizationDraft, offpeakTariffRate: event.target.value })} /></label>
+              <label className="ss-form-field"><span>PEAK START</span><input type="time" required value={String(organizationDraft.peakStartTime || '17:00').slice(0, 5)} onChange={(event) => setOrganizationDraft({ ...organizationDraft, peakStartTime: event.target.value })} /></label>
+              <label className="ss-form-field"><span>PEAK END</span><input type="time" required value={String(organizationDraft.peakEndTime || '22:00').slice(0, 5)} onChange={(event) => setOrganizationDraft({ ...organizationDraft, peakEndTime: event.target.value })} /></label>
+              <div className="ss-form-note ss-field-wide"><Activity size={14} /> Effective blended rate: ₹{number(resolveEffectiveTariffRate(organizationDraft), 2)}/kWh. The schedule-gap model has no hourly gap profile, so this weights peak/off-peak rates by their daily duration.</div>
+            </>}
             <label className="ss-form-field"><span>GRID CARBON · kg/kWh</span><input type="number" min="0" max="3" step="0.01" required value={organizationDraft.carbonFactor} onChange={(event) => setOrganizationDraft({ ...organizationDraft, carbonFactor: event.target.value })} /></label>
             <label className="ss-form-field"><span>OPERATING HOURS / DAY</span><input type="number" min="0.5" max="24" step="0.5" required value={organizationDraft.operatingHours} onChange={(event) => setOrganizationDraft({ ...organizationDraft, operatingHours: event.target.value })} /></label>
-            <div className="ss-form-note ss-field-wide"><MapPin size={14} /> Saved to this organization. Utility tariffs vary by DISCOM, tariff category, and billing period.</div>
+            <div className="ss-form-note ss-field-wide"><MapPin size={14} /> Saved to this organization. Utility tariffs vary by DISCOM, tariff category, and billing period; enter the rates from your bill.</div>
             <div className="ss-form-actions ss-field-wide"><button type="button" className="ss-button ss-button-quiet" onClick={() => setOrganizationModal(false)}>Cancel</button><button type="submit" className="ss-button ss-button-primary">Save workspace <ArrowRight size={14} /></button></div>
           </form>
         </section>
@@ -892,10 +957,10 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         <section className="ss-form-modal ss-methodology-modal" role="dialog" aria-modal="true" aria-labelledby="ss-method-title" onClick={(event) => event.stopPropagation()}>
           <div className="ss-modal-heading"><span className="ss-form-modal-icon"><Activity size={17} /></span><button className="ss-icon-button" aria-label="Close project method" onClick={() => setMethodologyOpen(false)}><X size={17} /></button></div>
           <div className="ss-modal-copy"><div className="ss-kicker"><span className="ss-kicker-dot" /> ESD PROJECT · ENERGY MANAGEMENT</div><h2 id="ss-method-title">How the model works.</h2><p>SyncSpace turns equipment ratings and operating schedules into planning estimates for each facility zone.</p></div>
-          <div className="ss-model-equation"><span>CONNECTED LOAD</span><strong>Σ appliance watts ÷ 1,000</strong><i>kW</i></div>
-          <div className="ss-model-equation"><span>DAILY ENERGY GAP</span><strong>Connected kW × max(0, operating hours − scheduled hours)</strong><i>kWh/day</i></div>
+          <div className="ss-model-equation"><span>ACTIVE LOAD</span><strong>Σ (rated watts × load factor) ÷ 1,000</strong><i>kW</i></div>
+          <div className="ss-model-equation"><span>DAILY ENERGY GAP</span><strong>max(0, active kW − standby kW) × idle hours</strong><i>kWh/day</i></div>
           <div className="ss-model-formulas"><article><span>01 · COST</span><strong>Energy gap × tariff</strong><small>₹ per day</small></article><article><span>02 · EMISSIONS</span><strong>Energy gap × configured factor</strong><small>kg CO₂ equivalent per day</small></article><article><span>03 · COVERAGE</span><strong>Scheduled hours ÷ operating baseline</strong><small>Average across facility zones</small></article></div>
-          <div className="ss-model-caveat"><ShieldCheck size={15} /><p><strong>Read this as a planning signal, not measured waste.</strong> The calculation assumes connected equipment could draw its rated load during unscheduled hours. Check meter readings, occupancy, and actual equipment controls before treating an estimate as a verified saving. Demo figures are illustrative.</p></div>
+          <div className="ss-model-caveat"><ShieldCheck size={15} /><p><strong>Read this as a planning signal, not measured waste.</strong> The gap compares estimated active load with declared standby load outside schedules. Load factor and standby watts need site data; defaults retain the rated-load assumption. Check meter readings, occupancy, and equipment behavior before treating an estimate as a verified saving. Demo figures are illustrative.</p></div>
           <div className="ss-form-actions ss-method-actions"><button type="button" className="ss-button ss-button-primary" onClick={() => setMethodologyOpen(false)}>Back to workspace <ArrowRight size={14} /></button></div>
         </section>
       </div>}
@@ -905,7 +970,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
           <div className="ss-drawer-top"><span className="ss-kicker"><span className="ss-kicker-dot" /> ZONE DETAIL</span><button className="ss-icon-button" aria-label="Close zone details" onClick={() => { setSelectedRoom(null); setRoomAnalysis(null); }}><X size={17} /></button></div>
           <div className="ss-drawer-title-row"><span className="ss-zone-initial ss-zone-initial-large">{selectedRoom.name.charAt(0)}</span><div><h2 id="ss-drawer-title">{selectedRoom.name}</h2><p>{selectedRoom.block}</p></div></div>
           <div className="ss-drawer-stats"><div><span>Connected load</span><strong>{number(roomEstimate(selectedRoom, organization.tariffRate, organization.carbonFactor, organization.operatingHours).connectedKw, 2)} kW</strong></div><div><span>Schedules</span><strong>{(selectedRoom.schedules || []).length}</strong></div><div><span>Daily gap estimate</span><strong>{number(roomEstimate(selectedRoom, organization.tariffRate, organization.carbonFactor, organization.operatingHours).wasteKwh, 1)} kWh</strong></div></div>
-          <div className="ss-drawer-section"><div className="ss-drawer-section-head"><h3>Equipment</h3><span>{(selectedRoom.appliances || []).length} items</span></div>{!(selectedRoom.appliances || []).length ? <p className="ss-drawer-empty">No equipment has been added for this zone.</p> : selectedRoom.appliances.map((appliance, index) => <div className="ss-equipment-row" key={appliance.id || appliance.name + index}><span className="ss-equipment-icon"><Zap size={14} /></span><strong>{appliance.name}</strong><span>{number(appliance.power_watts, 0)} W</span></div>)}</div>
+          <div className="ss-drawer-section"><div className="ss-drawer-section-head"><h3>Equipment</h3><span>{(selectedRoom.appliances || []).length} items</span></div>{!(selectedRoom.appliances || []).length ? <p className="ss-drawer-empty">No equipment has been added for this zone.</p> : selectedRoom.appliances.map((appliance, index) => <div className="ss-equipment-row" key={appliance.id || appliance.name + index}><span className="ss-equipment-icon"><Zap size={14} /></span><strong>{appliance.name}</strong><span>{number(appliance.power_watts, 0)} W · LF {number(appliance.load_factor ?? 1, 2)} · {number(appliance.standby_watts ?? 0, 0)} W standby</span></div>)}</div>
           <div className="ss-drawer-section"><div className="ss-drawer-section-head"><h3>Timetable</h3><span>{(selectedRoom.schedules || []).length} entries</span></div>{!(selectedRoom.schedules || []).length ? <p className="ss-drawer-empty">No timetable yet. Import one below to model this zone.</p> : selectedRoom.schedules.map((schedule, index) => <div className="ss-schedule-row" key={schedule.id || schedule.day_of_week + schedule.start_time + index}><span>{String(schedule.day_of_week || 'Day').slice(0, 3)}</span><strong>{String(schedule.start_time).slice(0, 5)} — {String(schedule.end_time).slice(0, 5)}</strong></div>)}</div>
           {roomAnalysis && <div className="ss-analysis-result"><span>DAILY FACILITY ESTIMATE</span><strong>{number(roomAnalysis.wasteKwh ?? roomAnalysis.wasted_energy_kwh, 2)} kWh</strong><p>Potential idle-time waste · ₹{number(roomAnalysis.cost ?? roomAnalysis.financial_loss_inr, 0)} per day at the configured tariff.</p></div>}
           <button className="ss-button ss-button-primary ss-analyze-button" onClick={analyzeRoom} disabled={analyzing}>{analyzing ? <><RefreshCw size={14} className="ss-spin" /> Calculating</> : <>Calculate zone estimate <ArrowRight size={14} /></>}</button>

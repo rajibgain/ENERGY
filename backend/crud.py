@@ -67,6 +67,8 @@ def create_room(db: Session, room: schemas.RoomCreate, organization_id: int):
         db.add(models.Appliance(
             name=appliance.name.strip(),
             power_watts=appliance.power_watts,
+            load_factor=appliance.load_factor,
+            standby_watts=appliance.standby_watts,
             room_id=db_room.id,
         ))
     db.commit()
@@ -77,6 +79,8 @@ def create_appliance(db: Session, appliance: schemas.ApplianceCreate, room_id: i
     db_appliance = models.Appliance(
         name=appliance.name.strip(),
         power_watts=appliance.power_watts,
+        load_factor=appliance.load_factor,
+        standby_watts=appliance.standby_watts,
         room_id=room_id,
     )
     db.add(db_appliance)
