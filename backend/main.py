@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from database import initialize_database
-from routers import auth, sync
+from routers import advisor, auth, sync
 
 app = FastAPI(title="SyncSpace AI API")
 FRONTEND_ORIGINS = [
@@ -33,6 +33,7 @@ async def verify_browser_origin(request: Request, call_next):
 
 app.include_router(auth.router)
 app.include_router(sync.router)
+app.include_router(advisor.router)
 
 @app.get("/")
 def read_root():

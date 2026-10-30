@@ -96,6 +96,23 @@ class GoogleRegisterRequest(GoogleLoginRequest):
     state: str = Field(default="Maharashtra", min_length=2, max_length=80)
 
 
+class AdvisorHistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class AdvisorChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1200)
+    history: list[AdvisorHistoryMessage] = Field(default_factory=list, max_length=10)
+
+    @field_validator("question")
+    @classmethod
+    def question_has_text(cls, value):
+        if not value.strip():
+            raise ValueError("Enter a question for the energy advisor.")
+        return value
+
+
 class InvitationRegisterRequest(BaseModel):
     token: str = Field(min_length=24, max_length=128)
     email: str = Field(min_length=3, max_length=254)

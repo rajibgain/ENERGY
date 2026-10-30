@@ -31,6 +31,7 @@ export const checkBackendHealth = async () => {
 export const signUp = async (payload) => (await API.post('/auth/register', payload)).data;
 export const signInWithGoogle = async (credential) => (await API.post('/auth/google/login', { credential })).data;
 export const signUpWithGoogle = async (payload) => (await API.post('/auth/google/register', payload)).data;
+export const askEnergyAdvisor = async (payload) => (await API.post('/advisor/chat', payload, { timeout: 45000 })).data;
 export const acceptInvitation = async (payload) => (await API.post('/auth/register-invitation', payload)).data;
 export const signIn = async (payload) => (await API.post('/auth/login', payload)).data;
 export const signOut = async () => API.post('/auth/logout');

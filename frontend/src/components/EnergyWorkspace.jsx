@@ -11,6 +11,7 @@ import { ELECTRICITY_DIRECTORY_SOURCES, INDIAN_STATES, STATE_ELECTRICITY_PROVIDE
 import { DEMO_TEAM } from '../data/demoWorkspace';
 import { roomEstimate, timeToMinutes } from '../utils/energyModel';
 import PortfolioMap from './PortfolioMap';
+import EnergyAdvisor from './EnergyAdvisor';
 
 const NAV = [
   { id: 'overview', label: 'Overview', number: '01' },
@@ -913,6 +914,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
       </div>}
 
       {toast && <div className="ss-toast" role="status"><Check size={15} />{toast}<button aria-label="Dismiss message" onClick={() => setToast('')}><X size={13} /></button></div>}
+      <EnergyAdvisor isDemo={isDemo} isOnline={isOnline} />
     </div>
   );
 }
