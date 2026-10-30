@@ -10,7 +10,7 @@ SyncSpace is a multi-organization energy workspace for companies, campuses, prop
 
 This version is prepared as a college ESD assignment on **Energy Management**. It demonstrates an equipment-and-schedule-based energy model, a ranked action center, emissions and cost estimates, an Indian electricity-provider directory, an organization-scoped site map, and block/room views. Open the sign-in page and choose **Explore the assignment demo** to see a complete sample campus without creating an account or starting the API. Demo values and map coordinates are illustrative and remain separate from live organization data.
 
-See [PROJECT_REPORT.md](PROJECT_REPORT.md) for the assignment abstract, objectives, methodology, model assumptions, architecture, limitations and a short presentation walkthrough. The dashboard also explains its calculations under **Project method**.
+See [PROJECT_GUIDE.md](PROJECT_GUIDE.md) for the complete project handbook: architecture, features, roles, data model, API, energy calculations, configuration, local setup, deployment and limitations. See [PROJECT_REPORT.md](PROJECT_REPORT.md) for the assignment abstract, objectives, methodology, model assumptions, and presentation walkthrough. The dashboard also explains its calculations under **Project method**.
 
 ## Run locally
 
