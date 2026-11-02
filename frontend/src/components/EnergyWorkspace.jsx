@@ -218,6 +218,7 @@ export default function EnergyWorkspace({
   const [teamBusy, setTeamBusy] = useState(false);
   const fileRef = useRef(null);
   const searchInputRef = useRef(null);
+  const today = useMemo(() => new Date(), []);
 
   const profile = useMemo(() => buildProfile(rooms, profileMode), [rooms, profileMode]);
   const rankedRooms = useMemo(() => rooms.map((room) => ({ ...room, estimate: roomEstimate(room, organization.tariffRate, organization.carbonFactor, organization.operatingHours) })).sort((a, b) => b.estimate.wasteKwh - a.estimate.wasteKwh), [rooms, organization]);
