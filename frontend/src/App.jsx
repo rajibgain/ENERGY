@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import EnergyWorkspace from './components/EnergyWorkspace';
 import AuthScreen from './components/AuthScreen';
-import { checkBackendHealth, clearSiteSchematic as clearSiteSchematicRequest, createRoom as createRoomRequest, createSite as createSiteRequest, fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, fetchSites, moveRoomToSite as moveRoomToSiteRequest, signOut, updateOrganization as saveOrganization, updateSite as updateSiteRequest, uploadSiteSchematic as uploadSiteSchematicRequest } from './services/api';
-import { calculateDemoDashboard, DEMO_BILLS, DEMO_ROOMS, DEMO_SESSION, DEMO_SITES } from './data/demoWorkspace';
+import {
+  checkBackendHealth, clearSiteSchematic as clearSiteSchematicRequest,
+  createRoom as createRoomRequest, createSite as createSiteRequest,
+  fetchBillRecords, fetchCampusDashboard, fetchRooms, fetchSession, fetchSites,
+  moveRoomToSite as moveRoomToSiteRequest, signOut, updateOrganization as saveOrganization,
+  updateSite as updateSiteRequest, uploadSiteSchematic as uploadSiteSchematicRequest,
+  fetchApplianceTemplates, fetchMeterSummary, fetchTasks, fetchBillTrends, fetchBillForecast,
+} from './services/api';
+import {
+  calculateDemoDashboard, DEMO_BILLS, DEMO_ROOMS, DEMO_SESSION, DEMO_SITES,
+  DEMO_APPLIANCE_TEMPLATES, DEMO_TASKS, DEMO_METER_SUMMARY, DEMO_BILL_TRENDS, DEMO_FORECAST,
+} from './data/demoWorkspace';
 import { resolveEffectiveTariffRate } from './utils/energyModel';
 
 const EMPTY_DASHBOARD = {
@@ -38,6 +48,11 @@ export default function App() {
   const [rooms, setRooms] = useState([]);
   const [sites, setSites] = useState([]);
   const [billRecords, setBillRecords] = useState([]);
+  const [applianceTemplates, setApplianceTemplates] = useState([]);
+  const [meterSummary, setMeterSummary] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [billTrends, setBillTrends] = useState([]);
+  const [forecast, setForecast] = useState(null);
   const [isOnline, setIsOnline] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -49,6 +64,11 @@ export default function App() {
     setRooms(DEMO_ROOMS.map((room) => ({ ...room })));
     setSites(DEMO_SITES.map((site) => ({ ...site })));
     setBillRecords(DEMO_BILLS);
+    setApplianceTemplates(DEMO_APPLIANCE_TEMPLATES);
+    setMeterSummary(DEMO_METER_SUMMARY);
+    setTasks(DEMO_TASKS);
+    setBillTrends(DEMO_BILL_TRENDS);
+    setForecast(DEMO_FORECAST);
     setIsOnline(false);
     setDataError('');
     setLastUpdated(new Date());
@@ -78,12 +98,30 @@ export default function App() {
     try {
       await checkBackendHealth();
       const liveOrganization = mapOrganization(session.organization);
-      const requests = [fetchCampusDashboard(liveOrganization), fetchRooms(), fetchSites()];
+      const requests = [
+        fetchCampusDashboard(liveOrganization),
+        fetchRooms(),
+        fetchSites(),
+        fetchApplianceTemplates(),
+        fetchMeterSummary(),
+        fetchTasks(),
+        fetchBillTrends(),
+        fetchBillForecast(),
+      ];
       if (role !== 'staff') requests.push(fetchBillRecords());
-      const [dashboardData, roomsData, sitesData, billsData = []] = await Promise.all(requests);
+      const [
+        dashboardData, roomsData, sitesData, templatesData = [],
+        meterData = null, tasksData = [], trendsData = [], forecastData = null,
+        billsData = [],
+      ] = await Promise.all(requests);
       setDashboard(dashboardData);
       setRooms(roomsData);
       setSites(sitesData);
+      setApplianceTemplates(templatesData);
+      setMeterSummary(meterData);
+      setTasks(tasksData);
+      setBillTrends(trendsData);
+      setForecast(forecastData);
       setBillRecords(billsData);
       setIsOnline(true);
     } catch (error) {
@@ -230,6 +268,11 @@ export default function App() {
       rooms={rooms}
       billRecords={billRecords}
       setBillRecords={setBillRecords}
+      applianceTemplates={applianceTemplates}
+      meterSummary={meterSummary}
+      tasks={tasks}
+      billTrends={billTrends}
+      forecast={forecast}
       isOnline={isOnline}
       isDemo={isDemo}
       refreshing={refreshing}

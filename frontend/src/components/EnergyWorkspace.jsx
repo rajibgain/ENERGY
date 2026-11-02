@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Building2, Check,
+  Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Award, Building2, Check,
   CheckCircle2, ChevronDown, ChevronRight, CircleDollarSign, CircleHelp,
   Clock3, CreditCard, Download, ExternalLink, FileDown, FileText, Leaf,
   MapPin, Mail, MoreHorizontal, Plus, RefreshCw, Search, ShieldCheck, Sun,
@@ -13,15 +13,21 @@ import { resolveEffectiveTariffRate, roomEstimate, timeToMinutes } from '../util
 import PortfolioMap from './PortfolioMap';
 import EnergyAdvisor from './EnergyAdvisor';
 import ScenarioTools from './ScenarioTools';
+import ModeledVsMeasuredChart from './ModeledVsMeasuredChart';
+import TaskManager from './TaskManager';
+import BillAnalyticsView from './BillAnalyticsView';
+const ZoneBenchmarkingModal = lazy(() => import('./ZoneBenchmarkingModal'));
 
 const NAV = [
   { id: 'overview', label: 'Overview', number: '01' },
   { id: 'locations', label: 'Locations', number: '02' },
   { id: 'performance', label: 'Energy profile', number: '03' },
-  { id: 'simulator', label: 'What-if tools', number: '04' },
-  { id: 'zones', label: 'Zones', number: '05' },
-  { id: 'imports', label: 'Schedule import', number: '06' },
-  { id: 'bills', label: 'Bill payments', number: '07' },
+  { id: 'measured-analytics', label: 'Modeled vs Measured', number: '04' },
+  { id: 'tasks', label: 'Audit tasks', number: '05' },
+  { id: 'simulator', label: 'What-if tools', number: '06' },
+  { id: 'zones', label: 'Zones & benchmark', number: '07' },
+  { id: 'imports', label: 'Schedule import', number: '08' },
+  { id: 'bills', label: 'Bill analytics', number: '09' },
 ];
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const ORGANIZATION_TYPES = ['Company', 'Commercial office', 'Education', 'Healthcare', 'Manufacturing', 'Retail', 'Hospitality', 'Logistics', 'Property portfolio', 'Public sector', 'Nonprofit', 'Other'];
@@ -163,7 +169,13 @@ function Metric({ icon: Icon, label, value, unit, detail }) {
   );
 }
 
-export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBillRecords, sites, onCreateRoom, onCreateSite, onUpdateSite, onUploadSchematic, onClearSchematic, onMoveRoom, isOnline, isDemo, refreshing, lastUpdated, dataError, onRefresh, organization, onOrganizationChange, user, role, onLogout }) {
+export default function EnergyWorkspace({
+  dashboard, rooms, billRecords, setBillRecords, sites,
+  onCreateRoom, onCreateSite, onUpdateSite, onUploadSchematic, onClearSchematic, onMoveRoom,
+  isOnline, isDemo, refreshing, lastUpdated, dataError, onRefresh,
+  organization, onOrganizationChange, user, role, onLogout,
+  applianceTemplates = [], meterSummary = null, tasks = [], billTrends = [], forecast = null
+}) {
   const canManageWorkspace = role === 'owner' || role === 'admin';
   const canManageFacilities = role !== 'staff';
   const canViewBills = role !== 'staff';
@@ -174,6 +186,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   const [needsAttention, setNeedsAttention] = useState(false);
   const [methodologyOpen, setMethodologyOpen] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState(null);
+  const [benchmarkingRoom, setBenchmarkingRoom] = useState(null);
   const [roomAnalysis, setRoomAnalysis] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [importRoomId, setImportRoomId] = useState('');
@@ -184,7 +197,7 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
   const [organizationModal, setOrganizationModal] = useState(false);
   const [organizationDraft, setOrganizationDraft] = useState(organization);
   const [zoneModal, setZoneModal] = useState(false);
-  const [zoneDraft, setZoneDraft] = useState({ name: '', block: '', site_id: '', appliances: [{ name: '', power_watts: '', load_factor: '1', standby_watts: '0' }] });
+  const [zoneDraft, setZoneDraft] = useState({ name: '', block: '', site_id: '', zone_type: 'office', area_sqm: '50', appliances: [{ name: '', power_watts: '', load_factor: '1', standby_watts: '0' }] });
   const [zoneBusy, setZoneBusy] = useState(false);
   const [zoneError, setZoneError] = useState('');
   const [billModal, setBillModal] = useState('');
@@ -274,9 +287,31 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
       goToSection('locations');
       return;
     }
-    setZoneDraft({ name: '', block: '', site_id: String(sites[0].id), appliances: [{ name: '', power_watts: '', load_factor: '1', standby_watts: '0' }] });
+    setZoneDraft({
+      name: '',
+      block: '',
+      site_id: String(sites[0].id),
+      zone_type: 'office',
+      area_sqm: '50',
+      appliances: [{ name: '', power_watts: '', load_factor: '1', standby_watts: '0' }],
+    });
     setZoneError('');
     setZoneModal(true);
+  };
+
+  const applyTemplateToAppliance = (index, templateId) => {
+    const t = (applianceTemplates || []).find((item) => String(item.id) === String(templateId));
+    if (!t) return;
+    setZoneDraft((current) => ({
+      ...current,
+      appliances: current.appliances.map((app, idx) => idx === index ? {
+        ...app,
+        name: t.name,
+        power_watts: String(t.power_watts),
+        load_factor: String(t.load_factor),
+        standby_watts: String(t.standby_watts),
+      } : app),
+    }));
   };
 
   const addEquipmentRow = () => setZoneDraft((current) => ({
@@ -307,7 +342,14 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
         name: zoneDraft.name.trim(),
         block: zoneDraft.block.trim(),
         site_id: Number(zoneDraft.site_id),
-        appliances: zoneDraft.appliances.map((appliance) => ({ name: appliance.name.trim(), power_watts: Number(appliance.power_watts), load_factor: Number(appliance.load_factor), standby_watts: Number(appliance.standby_watts) })),
+        zone_type: zoneDraft.zone_type || 'office',
+        area_sqm: zoneDraft.area_sqm ? Number(zoneDraft.area_sqm) : 50,
+        appliances: zoneDraft.appliances.map((appliance) => ({
+          name: appliance.name.trim(),
+          power_watts: Number(appliance.power_watts),
+          load_factor: Number(appliance.load_factor),
+          standby_watts: Number(appliance.standby_watts),
+        })),
       });
       if (!isDemo) await onRefresh();
       setZoneModal(false);
@@ -753,6 +795,22 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
             </aside>
           </div>
 
+          <ModeledVsMeasuredChart
+            summary={meterSummary}
+            onRefresh={onRefresh}
+            isDemo={isDemo}
+            canManage={canManageFacilities}
+          />
+
+          <TaskManager
+            tasks={tasks}
+            rooms={rooms}
+            organization={organization}
+            onRefresh={onRefresh}
+            isDemo={isDemo}
+            canManage={canManageFacilities}
+          />
+
           <ScenarioTools rooms={rooms} organization={organization} />
 
           <section id="zones" data-section className="ss-zones-section">
@@ -779,7 +837,22 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
                     <td><span className="ss-schedule-count"><span />{(room.schedules || []).length} {(room.schedules || []).length === 1 ? 'entry' : 'entries'}</span></td>
                     <td><strong>{number(estimate.wasteKwh, 1)} <small>kWh</small></strong></td>
                     <td><span className={'ss-status-tag' + (attention ? ' is-attention' : '')}><i />{attention ? 'Review schedule' : 'Scheduled'}</span></td>
-                    <td><button className="ss-row-open" aria-label={'View ' + room.name}><ArrowUpRight size={15} /></button></td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
+                        <button
+                          type="button"
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '4px 8px', fontSize: '11px', fontWeight: 600, borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: '#10b981', cursor: 'pointer' }}
+                          title="Compare against ECBC 2017 & BEE baselines"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBenchmarkingRoom(room);
+                          }}
+                        >
+                          <Award size={12} /> Benchmark
+                        </button>
+                        <button className="ss-row-open" aria-label={'View ' + room.name}><ArrowUpRight size={15} /></button>
+                      </div>
+                    </td>
                   </tr>;
                 })}
               </tbody></table></div>}
@@ -812,6 +885,8 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
               <div><div className="ss-kicker"><span className="ss-kicker-dot" /> BILLING & RECORDS</div><h2>Every bill.<br /><em>Accounted for.</em></h2><p>Bring state utilities and private providers into one electricity ledger for this workspace.</p></div>
               <div className="ss-bills-heading-actions"><button className="ss-button ss-button-quiet" onClick={exportBillRecords}><Download size={15} /> Export records</button><button className="ss-button ss-button-primary" onClick={() => setBillModal('add')}><Plus size={15} /> Add bill record</button></div>
             </div>
+
+            <BillAnalyticsView billTrends={billTrends} forecast={forecast} organization={organization} />
 
             <div className="ss-bill-overview">
               <article className="ss-bbps-card">
@@ -848,9 +923,34 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
             <label className="ss-form-field"><span>ZONE NAME</span><input required minLength="1" maxLength="120" value={zoneDraft.name} onChange={(event) => setZoneDraft({ ...zoneDraft, name: event.target.value })} placeholder="Research lab, floor 2…" /></label>
             <label className="ss-form-field"><span>BLOCK / BUILDING</span><input required minLength="1" maxLength="120" value={zoneDraft.block} onChange={(event) => setZoneDraft({ ...zoneDraft, block: event.target.value })} placeholder="Block A" /></label>
             <label className="ss-form-field ss-field-wide"><span>LOCATION</span><select required value={zoneDraft.site_id} onChange={(event) => setZoneDraft({ ...zoneDraft, site_id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
+            <label className="ss-form-field"><span>ZONE TYPE (ECBC 2017)</span>
+              <select value={zoneDraft.zone_type || 'office'} onChange={(event) => setZoneDraft({ ...zoneDraft, zone_type: event.target.value })}>
+                <option value="office">Commercial Office</option>
+                <option value="classroom">Classroom / Lecture Hall</option>
+                <option value="laboratory">Laboratory / Research</option>
+                <option value="auditorium">Auditorium / Conference</option>
+                <option value="library">Library / Reading Hall</option>
+                <option value="cafeteria">Cafeteria / Dining</option>
+                <option value="general">General Space</option>
+              </select>
+            </label>
+            <label className="ss-form-field"><span>FLOOR AREA (m²)</span>
+              <input type="number" min="1" max="100000" step="any" required value={zoneDraft.area_sqm || '50'} onChange={(event) => setZoneDraft({ ...zoneDraft, area_sqm: event.target.value })} placeholder="50" />
+            </label>
             <div className="ss-zone-equipment ss-field-wide">
               <div className="ss-zone-equipment-head"><span>EQUIPMENT LOAD MODEL</span><button type="button" disabled={zoneDraft.appliances.length >= 50} onClick={addEquipmentRow}><Plus size={12} /> Add item</button></div>
               {zoneDraft.appliances.map((appliance, index) => <div className="ss-zone-equipment-row" key={index}>
+                {applianceTemplates && applianceTemplates.length > 0 && (
+                  <label className="ss-form-field ss-field-wide" style={{ marginBottom: '6px' }}>
+                    <span>LOAD PRESET FROM APPLIANCE LIBRARY</span>
+                    <select defaultValue="" onChange={(e) => { applyTemplateToAppliance(index, e.target.value); e.target.value = ''; }}>
+                      <option value="" disabled>Choose standard appliance template...</option>
+                      {applianceTemplates.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name} ({t.power_watts}W · LF {t.load_factor} · {t.standby_watts}W standby)</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label className="ss-form-field"><span>{index === 0 ? 'EQUIPMENT NAME' : `EQUIPMENT ${index + 1}`}</span><input required minLength="1" maxLength="120" value={appliance.name} onChange={(event) => updateEquipmentRow(index, 'name', event.target.value)} placeholder="Air conditioner" /></label>
                 <label className="ss-form-field"><span>RATED POWER · W</span><input type="number" required min="0.01" max="10000000" step="any" value={appliance.power_watts} onChange={(event) => updateEquipmentRow(index, 'power_watts', event.target.value)} placeholder="1500" /></label>
                 <label className="ss-form-field"><span>LOAD FACTOR · 0.05–1</span><input type="number" required min="0.05" max="1" step="0.05" value={appliance.load_factor} onChange={(event) => updateEquipmentRow(index, 'load_factor', event.target.value)} title="Typical operating watts divided by rated watts" /></label>
@@ -979,6 +1079,15 @@ export default function EnergyWorkspace({ dashboard, rooms, billRecords, setBill
       </div>}
 
       {toast && <div className="ss-toast" role="status"><Check size={15} />{toast}<button aria-label="Dismiss message" onClick={() => setToast('')}><X size={13} /></button></div>}
+      {benchmarkingRoom && (
+        <Suspense fallback={null}>
+          <ZoneBenchmarkingModal
+            room={benchmarkingRoom}
+            onClose={() => setBenchmarkingRoom(null)}
+            isDemo={isDemo}
+          />
+        </Suspense>
+      )}
       <EnergyAdvisor isDemo={isDemo} isOnline={isOnline} />
     </div>
   );

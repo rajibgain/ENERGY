@@ -173,6 +173,85 @@ export const DEMO_TEAM = [
   { id: 9303, role: 'staff', is_active: true, user: { id: 9303, email: 'kabir@northstar.example', full_name: 'Kabir Das' }, created_at: localDate(-21) },
 ];
 
+export const DEMO_APPLIANCE_TEMPLATES = [
+  { id: 1, name: '1.5-ton Split AC', category: 'HVAC', power_watts: 1500, load_factor: 0.6, standby_watts: 15 },
+  { id: 2, name: '2-ton Split AC', category: 'HVAC', power_watts: 2000, load_factor: 0.6, standby_watts: 20 },
+  { id: 3, name: 'Window AC 1.5-ton', category: 'HVAC', power_watts: 1800, load_factor: 0.65, standby_watts: 12 },
+  { id: 4, name: 'Standard Ceiling Fan', category: 'Fan', power_watts: 75, load_factor: 0.8, standby_watts: 0 },
+  { id: 5, name: 'BEE 5-Star Ceiling Fan', category: 'Fan', power_watts: 35, load_factor: 0.8, standby_watts: 0 },
+  { id: 6, name: '40W Tube Light', category: 'Lighting', power_watts: 40, load_factor: 1.0, standby_watts: 0 },
+  { id: 7, name: 'LED Tube Light 20W', category: 'Lighting', power_watts: 20, load_factor: 1.0, standby_watts: 0 },
+  { id: 8, name: 'LED Panel 40W', category: 'Lighting', power_watts: 40, load_factor: 1.0, standby_watts: 0 },
+  { id: 9, name: 'Desktop Computer', category: 'IT', power_watts: 200, load_factor: 0.5, standby_watts: 5 },
+  { id: 10, name: 'Water Cooler', category: 'Kitchen', power_watts: 150, load_factor: 0.4, standby_watts: 5 },
+];
+
+export const DEMO_TASKS = [
+  {
+    id: 801,
+    title: 'Install digital timer on Auditorium chiller',
+    description: 'Avoidable idle runtime observed on weekends. Retrofit weekly programmable controller.',
+    assigned_to: 'Priya Sen',
+    due_date: localDate(14),
+    status: 'open',
+    priority: 'high',
+    room_id: 905,
+    before_reading_kwh: null,
+    after_reading_kwh: null,
+    verified_savings_kwh: null,
+    verified_savings_inr: null,
+    created_at: localDate(-5),
+  },
+  {
+    id: 802,
+    title: 'LED retrofit across Engineering Labs',
+    description: 'Replaced 40W magnetic fluorescent fixtures with 20W electronic LED batten units.',
+    assigned_to: 'Kabir Das',
+    due_date: localDate(-10),
+    status: 'completed',
+    priority: 'medium',
+    room_id: 901,
+    before_reading_kwh: 5400,
+    after_reading_kwh: 3100,
+    verified_savings_kwh: 2300,
+    verified_savings_inr: 19550,
+    completed_at: localDate(-8),
+    created_at: localDate(-30),
+  },
+];
+
+export const DEMO_METER_SUMMARY = {
+  monthly_data: [
+    { period: '2026-08', modeled_kwh: 24800, measured_kwh: 26150, difference_kwh: -1350, difference_pct: -5.4 },
+    { period: '2026-09', modeled_kwh: 24800, measured_kwh: 25400, difference_kwh: -600, difference_pct: -2.4 },
+    { period: '2026-10', modeled_kwh: 24800, measured_kwh: 23900, difference_kwh: 900, difference_pct: 3.6 },
+  ],
+  total_modeled_kwh: 74400,
+  total_measured_kwh: 75450,
+  net_gap_kwh: -1050,
+};
+
+export const DEMO_BILL_TRENDS = [
+  { month: '2026-07', total_amount: 142000, bill_count: 2, avg_amount: 71000, rolling_avg: null, is_anomaly: false },
+  { month: '2026-08', total_amount: 148500, bill_count: 2, avg_amount: 74250, rolling_avg: null, is_anomaly: false },
+  { month: '2026-09', total_amount: 145000, bill_count: 2, avg_amount: 72500, rolling_avg: null, is_anomaly: false },
+  { month: '2026-10', total_amount: 198000, bill_count: 2, avg_amount: 99000, rolling_avg: 145166.7, is_anomaly: true },
+];
+
+export const DEMO_FORECAST = {
+  historical_months: [
+    { month: '2026-07', amount: 142000 },
+    { month: '2026-08', amount: 148500 },
+    { month: '2026-09', amount: 145000 },
+    { month: '2026-10', amount: 198000 },
+  ],
+  predicted_month: '2026-11',
+  predicted_amount: 184500,
+  predicted_kwh: 21705,
+  confidence_r2: 0.81,
+  trend: 'increasing',
+};
+
 export function calculateDemoDashboard(rooms, organization) {
   return calculateWorkspaceDashboard(rooms, organization);
 }

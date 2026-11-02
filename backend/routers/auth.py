@@ -18,18 +18,20 @@ import schemas
 from auth_security import (
     AuthContext,
     clear_session_cookie,
+    create_password_reset_token,
+    decode_password_reset_token,
     hash_password,
     require_roles,
     set_session_cookie,
     verify_password,
 )
 from database import get_db
+from email_service import send_invitation_email, send_password_reset_email
+from rate_limiter import login_limiter
 
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication & workspace"])
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
-_login_attempts: dict[str, list[float]] = {}
-_attempt_lock = threading.Lock()
 
 
 def normalized_email(value: str) -> str:
@@ -88,19 +90,11 @@ def invite_digest(token: str) -> str:
 
 
 def _rate_limit_login(key: str):
-    now = time.monotonic()
-    cutoff = now - 15 * 60
-    with _attempt_lock:
-        attempts = [timestamp for timestamp in _login_attempts.get(key, []) if timestamp >= cutoff]
-        if len(attempts) >= 10:
-            raise HTTPException(status_code=429, detail="Too many attempts. Wait 15 minutes and try again.")
-        attempts.append(now)
-        _login_attempts[key] = attempts
+    login_limiter.check(key)
 
 
 def _clear_login_limit(key: str):
-    with _attempt_lock:
-        _login_attempts.pop(key, None)
+    login_limiter.clear(key)
 
 
 @router.post("/register", response_model=schemas.SessionView, status_code=status.HTTP_201_CREATED)
@@ -137,7 +131,7 @@ def register(payload: schemas.RegisterRequest, response: Response, db: Session =
 def register_from_invitation(payload: schemas.InvitationRegisterRequest, response: Response, db: Session = Depends(get_db)):
     email = normalized_email(payload.email)
     invitation = db.query(models.Invitation).filter(models.Invitation.token_hash == invite_digest(payload.token)).first()
-    now = datetime.utcnow()
+    now = models.utc_now()
     if not invitation or invitation.accepted_at or invitation.expires_at <= now:
         raise HTTPException(status_code=400, detail="This invitation is invalid or has expired.")
     if invitation.email != email:
@@ -244,6 +238,33 @@ def register_with_google(payload: schemas.GoogleRegisterRequest, response: Respo
     _clear_login_limit(rate_key)
     set_session_cookie(response, user.id, organization.id)
     return session_payload(user, membership)
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Initiates a secure password reset flow via SMTP."""
+    email = normalized_email(payload.email)
+    user = db.query(models.User).filter(models.User.email == email, models.User.is_active.is_(True)).first()
+    if user:
+        token = create_password_reset_token(user.id, user.email)
+        reset_link = f"/reset-password?token={token}"
+        send_password_reset_email(to=user.email, user_name=user.full_name, reset_link=reset_link)
+    # Always return a generic success message to prevent user enumeration
+    return {"message": "If this email is registered, password reset instructions have been sent."}
+
+
+@router.post("/reset-password")
+def reset_password(payload: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Verifies token and sets a new password."""
+    claims = decode_password_reset_token(payload.token)
+    user_id = int(claims.get("sub"))
+    user = db.query(models.User).filter(models.User.id == user_id, models.User.is_active.is_(True)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found or disabled.")
+
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    return {"message": "Your password has been successfully updated. Please sign in with your new password."}
 
 
 @router.post("/google/login", response_model=schemas.SessionView)
@@ -436,11 +457,21 @@ def create_invitation(
         role=payload.role,
         token_hash=invite_digest(token),
         created_by_id=context.user.id,
-        expires_at=datetime.utcnow() + timedelta(days=7),
+        expires_at=models.utc_now() + timedelta(days=7),
     )
     db.add(invitation)
     db.commit()
     db.refresh(invitation)
+
+    # Trigger SMTP email if configured
+    invite_url = f"/register-invitation?token={token}"
+    send_invitation_email(
+        to=email,
+        inviter_name=context.user.full_name,
+        org_name=context.organization.name,
+        invite_link=invite_url,
+    )
+
     return {"id": invitation.id, "email": email, "role": invitation.role, "token": token, "expires_at": invitation.expires_at}
 
 
@@ -451,7 +482,7 @@ def list_invitations(context: AuthContext = Depends(require_roles("owner", "admi
         .filter(
             models.Invitation.organization_id == context.organization.id,
             models.Invitation.accepted_at.is_(None),
-            models.Invitation.expires_at > datetime.utcnow(),
+            models.Invitation.expires_at > models.utc_now(),
         )
         .order_by(models.Invitation.created_at.desc())
         .all()

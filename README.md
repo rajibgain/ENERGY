@@ -1,37 +1,59 @@
 # SyncSpace
 
-**Live assignment demo:** [Open SyncSpace](https://rajibgain.github.io/ENERGY/)
+**Live assignment demo:** [Open SyncSpace](https://rajibgain.github.io/ENERGY/)  
+**Developer & Onboarding Guide:** [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) — *Complete 5-minute setup, architecture walkthrough, and end-to-end testing instructions for friends and collaborators.*
 
-The public site is hosted with GitHub Pages. Choose **Explore the assignment demo** to open the sample workspace without an account. Its illustrative map shows two sample sites; you can add a location and upload an optional building schematic to explore the interface. Demo edits stay in the browser session. Organization sign-in and saved team or site data require the separate API service.
+The public site is hosted with GitHub Pages. Choose **Explore the assignment demo** to open the sample workspace without an account. Its illustrative map shows sample sites; you can explore the What-If Simulator, Kolkata Rooftop Solar Estimator, hourly schedule profiles, and portfolio CSV exports without a backend. Organization sign-in and saved team or site data require the separate FastAPI service.
 
-Every push to `main` builds the frontend and publishes it to GitHub Pages. The Vite base path is set in the deployment workflow for this repository.
+Every push to `main` triggers automated Pytest testing and builds/publishes the frontend to GitHub Pages.
 
-SyncSpace is a multi-organization energy workspace for companies, campuses, property portfolios and other facility operators. Each organization has its own facilities, bill ledger, team and access roles.
+---
 
-This version is prepared as a college ESD assignment on **Energy Management**. It includes an equipment-and-schedule model with load-factor and standby inputs, a ranked action center, editable What-if scenarios, a Kolkata rooftop solar estimator, portfolio CSV reporting, emissions and cost estimates, an Indian electricity-provider directory, an organization-scoped site map, and block/room views. Open the sign-in page and choose **Explore the assignment demo** to see a complete sample campus without creating an account or starting the API. Demo values and map coordinates are illustrative and remain separate from live organization data.
+## What is SyncSpace?
 
-See [PROJECT_GUIDE.md](PROJECT_GUIDE.md) for the complete project handbook: architecture, features, roles, data model, API, energy calculations, configuration, local setup, deployment and limitations. See [PROJECT_REPORT.md](PROJECT_REPORT.md) for the assignment abstract, objectives, methodology, model assumptions, and presentation walkthrough. The dashboard also explains its calculations under **Project method**.
+SyncSpace is a multi-organization energy workspace for universities, corporate campuses, and facility operators. It turns entered equipment and schedule data into defensible, verified planning estimates:
+- **Smart Energy Modeling:** Replaces flat-rate full load assumptions with realistic **Load Factors** (e.g. 0.60 for ACs) and **Standby Power** ratings.
+- **Interval Meter CSV Upload (No IoT):** Upload historical meter CSVs to generate dual-series **Modeled vs. Measured** variance charts.
+- **Actionable Task & Audit Register:** Track energy-saving actions, record before-and-after meter readings, and compute verified annual savings in kWh and ₹.
+- **Bill Trends & Anomaly Flags:** Graph monthly utility bills with automatic >20% rolling-average anomaly flags.
+- **Next-Month Predictive Forecasting:** Embedded local linear regression forecasting next month's consumption and cost with $R^2$ validation.
+- **Statutory ECBC 2017 & BEE Benchmarking:** Compare room Energy Performance Index ($\text{EPI} = \text{kWh}/\text{m}^2$) against official Indian building efficiency codes.
+- **Production Hygiene:** Versioned Alembic migrations (SQLite & PostgreSQL), transactional SMTP email workflows (invites, password resets, alerts), and Redis-backed rate limiting.
 
-## Run locally
+See:
+- **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)** for quick setup, architecture, and end-to-end testing walkthroughs.
+- **[PROJECT_GUIDE.md](PROJECT_GUIDE.md)** for the complete technical handbook: API schemas, validation limits, security, and operations.
+- **[PROJECT_REPORT.md](PROJECT_REPORT.md)** for the academic report, mathematical methodology, and ECBC/BEE regulatory baselines.
 
-In one terminal, start the API:
+---
 
+## Run Locally in 5 Minutes
+
+### Terminal 1: Backend API
 ```powershell
 cd backend
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe seed_appliances.py
 .\.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
+- API Health Check: `http://127.0.0.1:8000/`
+- Interactive Swagger Docs: `http://127.0.0.1:8000/docs`
 
-In another terminal, start the web app:
-
+### Terminal 2: Frontend Web App
 ```powershell
 cd frontend
 npm install
 npm run dev
 ```
+- Open in browser: `http://127.0.0.1:5173/`
 
-Open `http://127.0.0.1:5173`. The first person to create an organization becomes its owner. Owners and admins can open **Team** to invite people; the invitation link is shown once, expires after seven days and is accepted using the invited email address.
+### Run Automated Tests (25 tests, 0 warnings)
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest -v
+```
 
 New organization workspaces start empty: no demo rooms, placeholder location, or generated energy figures. Add a location by marking it on the map or pasting a full Google Maps link with a pin, then add zones and equipment. Equipment includes rated watts, load factor (typical active draw ÷ rated watts), and standby watts; the defaults of 1.0 and 0 W preserve the previous rated-load assumption until you enter site data. Import a schedule CSV to calculate estimates from those inputs. The What-if and solar tools use editable assumptions; solar payback requires an installer quote. An empty workspace shows blank metrics until facility data exists.
 

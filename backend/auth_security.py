@@ -50,6 +50,44 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
+RESET_TOKEN_SECONDS = 60 * 60  # 1 hour
+
+
+def create_password_reset_token(user_id: int, email: str) -> str:
+    now = int(time.time())
+    header = _b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
+    payload = _b64encode(json.dumps({
+        "sub": str(user_id),
+        "email": email,
+        "purpose": "password_reset",
+        "iat": now,
+        "exp": now + RESET_TOKEN_SECONDS,
+        "jti": secrets.token_urlsafe(12),
+    }, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header}.{payload}".encode("ascii")
+    signature = hmac.new(_secret_key, signing_input, hashlib.sha256).digest()
+    return f"{header}.{payload}.{_b64encode(signature)}"
+
+
+def decode_password_reset_token(token: str) -> dict:
+    try:
+        header, payload, signature = token.split(".", 2)
+        expected = hmac.new(_secret_key, f"{header}.{payload}".encode("ascii"), hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, _b64decode(signature)):
+            raise ValueError("bad signature")
+        token_header = json.loads(_b64decode(header))
+        claims = json.loads(_b64decode(payload))
+        if token_header.get("alg") != "HS256":
+            raise ValueError("bad algorithm")
+        if claims.get("purpose") != "password_reset":
+            raise ValueError("bad purpose")
+        if int(claims.get("exp", 0)) <= int(time.time()):
+            raise ValueError("expired token")
+        return claims
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired password reset link.")
+
+
 def create_session_token(user_id: int, organization_id: int) -> str:
     now = int(time.time())
     header = _b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))

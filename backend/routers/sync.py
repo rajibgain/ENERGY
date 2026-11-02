@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -208,6 +208,15 @@ def create_schedule_for_room(
     return crud.create_schedule(db=db, schedule=schedule, room_id=room_id)
 
 
+@router.get("/appliance-templates/", response_model=List[schemas.ApplianceTemplateView])
+def get_appliance_templates(
+    category: str | None = Query(None),
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager", "staff")),
+    db: Session = Depends(get_db),
+):
+    return crud.get_appliance_templates(db, category=category)
+
+
 @router.post("/rooms/{room_id}/schedules/upload/")
 def upload_schedules_csv(
     room_id: int,
@@ -230,7 +239,19 @@ def upload_schedules_csv(
         if not reader.fieldnames or not required_headers.issubset({header.strip().lower() for header in reader.fieldnames}):
             raise HTTPException(status_code=422, detail="CSV needs day_of_week, start_time and end_time columns.")
         field_map = {header.strip().lower(): header for header in reader.fieldnames}
+
+        # Query existing schedule slots to avoid duplicates and overlaps
+        existing_schedules = db.query(models.Schedule).filter(models.Schedule.room_id == room.id).all()
+        existing_slots = {
+            (s.day_of_week.strip().lower(), s.start_time, s.end_time)
+            for s in existing_schedules
+        }
+        seen_in_batch = set()
         schedules = []
+        skipped_duplicates = 0
+        skipped_overlaps = 0
+        active_intervals = list(existing_schedules)
+
         for row_number, row in enumerate(reader, start=2):
             try:
                 schedule = schemas.ScheduleCreate(
@@ -238,25 +259,59 @@ def upload_schedules_csv(
                     start_time=row.get(field_map["start_time"], "").strip(),
                     end_time=row.get(field_map["end_time"], "").strip(),
                 )
-                schedules.append(models.Schedule(
+                slot_key = (schedule.day_of_week.lower(), schedule.start_time, schedule.end_time)
+                # Exact duplicate check
+                if slot_key in existing_slots or slot_key in seen_in_batch:
+                    skipped_duplicates += 1
+                    continue
+
+                # Intersecting interval overlap check
+                overlap = services.find_overlapping_schedule(
+                    active_intervals,
+                    schedule.day_of_week,
+                    schedule.start_time,
+                    schedule.end_time,
+                )
+                if overlap:
+                    skipped_overlaps += 1
+                    continue
+
+                seen_in_batch.add(slot_key)
+                db_sched = models.Schedule(
                     room_id=room.id,
                     day_of_week=schedule.day_of_week,
                     start_time=schedule.start_time,
                     end_time=schedule.end_time,
-                ))
+                )
+                schedules.append(db_sched)
+                active_intervals.append(db_sched)
             except Exception as exc:
                 raise HTTPException(status_code=422, detail=f"Invalid schedule on CSV row {row_number}.") from exc
-        if not schedules:
+
+        if not schedules and skipped_duplicates == 0 and skipped_overlaps == 0:
             raise HTTPException(status_code=422, detail="The CSV has no schedule rows.")
-        db.add_all(schedules)
-        db.commit()
+        if schedules:
+            db.add_all(schedules)
+            db.commit()
+
+        msg = f"Successfully added {len(schedules)} schedules to {room.name}."
+        if skipped_duplicates > 0:
+            msg += f" ({skipped_duplicates} duplicate entry/entries skipped)"
+        if skipped_overlaps > 0:
+            msg += f" ({skipped_overlaps} overlapping entry/entries skipped)"
+        return {
+            "message": msg,
+            "count": len(schedules),
+            "skipped_duplicates": skipped_duplicates,
+            "skipped_overlaps": skipped_overlaps,
+        }
     except HTTPException:
-        db.rollback()
         raise
     except (UnicodeDecodeError, csv.Error) as exc:
-        db.rollback()
         raise HTTPException(status_code=422, detail="Could not read this CSV as UTF-8.") from exc
-    return {"message": f"Successfully added {len(schedules)} schedules to {room.name}.", "count": len(schedules)}
+    except Exception as exc:
+        db.rollback()
+        raise
 
 
 @router.get("/rooms/{room_id}/waste-analysis/")
@@ -395,3 +450,224 @@ def update_bill_status(
     db.commit()
     db.refresh(record)
     return record
+
+
+# ── Meter Data CSV Upload & Analytics ──────────────────────────────────────
+
+
+def _parse_meter_timestamp(raw_value: str) -> datetime:
+    raw = raw_value.strip()
+    formats = [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Unrecognized date/time format: '{raw_value}'")
+
+
+@router.post("/meter-data/upload/", response_model=schemas.MeterUploadResponse)
+def upload_meter_csv(
+    file: UploadFile = File(...),
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    if file.size is not None and file.size > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV files must be 10 MB or smaller.")
+    try:
+        content = file.file.read(10 * 1024 * 1024 + 1)
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="CSV files must be 10 MB or smaller.")
+        text = content.decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(text))
+
+        if not reader.fieldnames:
+            raise HTTPException(status_code=422, detail="The CSV file is empty.")
+
+        header_map = {h.strip().lower(): h for h in reader.fieldnames}
+        ts_key = next((k for k in ["timestamp", "datetime", "time", "date"] if k in header_map), None)
+        kwh_key = next((k for k in ["kwh", "kwh_reading", "reading", "energy_kwh", "value"] if k in header_map), None)
+        room_key = next((k for k in ["room_name", "zone_name", "room", "zone"] if k in header_map), None)
+        interval_key = next((k for k in ["interval_minutes", "interval"] if k in header_map), None)
+
+        if not ts_key or not kwh_key:
+            raise HTTPException(
+                status_code=422,
+                detail="CSV must contain at least 'timestamp' and 'kwh' columns (or equivalent).",
+            )
+
+        # Preload rooms for quick matching
+        org_rooms = {
+            r.name.strip().lower(): r.id
+            for r in db.query(models.Room.id, models.Room.name).filter(models.Room.organization_id == context.organization.id).all()
+        }
+
+        readings = []
+        warnings = []
+
+        for row_idx, row in enumerate(reader, start=2):
+            raw_ts = row.get(header_map[ts_key], "")
+            raw_kwh = row.get(header_map[kwh_key], "")
+
+            if not raw_ts or not raw_kwh:
+                continue
+
+            try:
+                parsed_ts = _parse_meter_timestamp(raw_ts)
+            except ValueError as err:
+                warnings.append(f"Row {row_idx}: {err}")
+                continue
+
+            try:
+                kwh_val = float(raw_kwh.replace(",", ""))
+                if kwh_val < 0:
+                    warnings.append(f"Row {row_idx}: negative kWh value ignored ({kwh_val})")
+                    continue
+            except ValueError:
+                warnings.append(f"Row {row_idx}: invalid numeric value '{raw_kwh}'")
+                continue
+
+            # Optional room association
+            matched_room_id = None
+            if room_key:
+                raw_room_name = row.get(header_map[room_key], "").strip()
+                if raw_room_name:
+                    matched_room_id = org_rooms.get(raw_room_name.lower())
+                    if not matched_room_id:
+                        warnings.append(f"Row {row_idx}: room '{raw_room_name}' not found; assigned to portfolio level.")
+
+            # Optional interval minutes
+            interval_mins = 60
+            if interval_key:
+                try:
+                    interval_mins = int(row.get(header_map[interval_key], "60"))
+                except ValueError:
+                    interval_mins = 60
+
+            readings.append(models.MeterReading(
+                organization_id=context.organization.id,
+                room_id=matched_room_id,
+                timestamp=parsed_ts,
+                kwh_reading=round(kwh_val, 3),
+                interval_minutes=interval_mins,
+                source="csv_upload",
+                uploaded_by_id=context.user.id,
+            ))
+
+        if not readings:
+            detail = "No valid meter readings could be parsed from this file."
+            if warnings:
+                detail += f" ({len(warnings)} rows had errors, e.g.: {warnings[0]})"
+            raise HTTPException(status_code=422, detail=detail)
+
+        db.add_all(readings)
+        db.commit()
+
+        return schemas.MeterUploadResponse(
+            message=f"Successfully imported {len(readings)} meter reading(s).",
+            imported_count=len(readings),
+            warnings=warnings[:10],
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except (UnicodeDecodeError, csv.Error) as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="Could not read CSV file.") from exc
+
+
+@router.get("/meter-data/readings/", response_model=List[schemas.MeterReadingView])
+def list_meter_readings(
+    room_id: int | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager", "staff")),
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.MeterReading).filter(models.MeterReading.organization_id == context.organization.id)
+    if room_id:
+        query = query.filter(models.MeterReading.room_id == room_id)
+    return query.order_by(models.MeterReading.timestamp.desc()).limit(limit).all()
+
+
+@router.get("/meter-data/summary/", response_model=schemas.ModeledVsMeasuredSummary)
+def get_modeled_vs_measured_summary(
+    context: AuthContext = Depends(require_roles("owner", "admin", "manager", "staff")),
+    db: Session = Depends(get_db),
+):
+    # Calculate modeled monthly energy for organization
+    rooms = crud.get_rooms(db, organization_id=context.organization.id)
+    total_daily_modeled_kwh = 0.0
+    for r in rooms:
+        analysis = services.calculate_room_waste(
+            room=r,
+            tariff_rate=context.organization.effective_tariff_rate,
+            daily_op_hours=context.organization.operating_hours,
+            carbon_factor=context.organization.carbon_factor,
+        )
+        total_daily_modeled_kwh += analysis.get("modeled_energy_kwh", 0.0)
+
+    # Monthly modeled baseline (~30 days per month)
+    monthly_modeled_kwh = round(total_daily_modeled_kwh * 30.0, 2)
+
+    # Aggregate measured readings by month (YYYY-MM)
+    readings = (
+        db.query(models.MeterReading)
+        .filter(models.MeterReading.organization_id == context.organization.id)
+        .order_by(models.MeterReading.timestamp.asc())
+        .all()
+    )
+
+    monthly_measured: dict[str, float] = {}
+    for reading in readings:
+        m_key = reading.timestamp.strftime("%Y-%m")
+        monthly_measured[m_key] = monthly_measured.get(m_key, 0.0) + reading.kwh_reading
+
+    items = []
+    total_measured = 0.0
+    total_modeled = 0.0
+
+    if monthly_measured:
+        for month_str, measured_val in sorted(monthly_measured.items()):
+            measured_rounded = round(measured_val, 2)
+            diff = round(monthly_modeled_kwh - measured_rounded, 2)
+            pct = round((diff / monthly_modeled_kwh * 100), 1) if monthly_modeled_kwh > 0 else 0.0
+            items.append(schemas.ModeledVsMeasuredItem(
+                period=month_str,
+                modeled_kwh=monthly_modeled_kwh,
+                measured_kwh=measured_rounded,
+                difference_kwh=diff,
+                difference_pct=pct,
+            ))
+            total_measured += measured_rounded
+            total_modeled += monthly_modeled_kwh
+    else:
+        # Provide current month baseline if no readings uploaded yet
+        now_str = date.today().strftime("%Y-%m")
+        items.append(schemas.ModeledVsMeasuredItem(
+            period=now_str,
+            modeled_kwh=monthly_modeled_kwh,
+            measured_kwh=0.0,
+            difference_kwh=monthly_modeled_kwh,
+            difference_pct=100.0,
+        ))
+        total_modeled = monthly_modeled_kwh
+
+    return schemas.ModeledVsMeasuredSummary(
+        monthly_data=items,
+        total_modeled_kwh=round(total_modeled, 2),
+        total_measured_kwh=round(total_measured, 2),
+        net_gap_kwh=round(total_modeled - total_measured, 2),
+    )
+

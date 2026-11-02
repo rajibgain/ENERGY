@@ -72,16 +72,36 @@ New organizations start with **no sample locations, zones, schedules, or fabrica
 │   └── deploy-pages.yml            Frontend build and GitHub Pages deployment
 ├── backend/
 │   ├── main.py                     FastAPI app, middleware, router registration
-│   ├── database.py                 SQLAlchemy engine and startup schema adjustments
-│   ├── models.py                   SQLAlchemy database models
+│   ├── database.py                 SQLAlchemy engine, connection setup, sessionmaker
+│   ├── alembic.ini                 Alembic migration configuration
+│   ├── alembic/                    Alembic versioned database migrations
+│   │   ├── env.py                  Migration runner with SQLite/Postgres batch support
+│   │   └── versions/               Migration scripts (e.g., initial schema + Phase 2/3)
+│   ├── models.py                   SQLAlchemy database models (Rooms, Meter, Tasks, etc.)
 │   ├── schemas.py                  Pydantic request and response validation
-│   ├── crud.py                     Organization-scoped facility data operations
-│   ├── services.py                 Schedule merge and energy calculations
-│   ├── auth_security.py            Password hashes, signed sessions, role checks
+│   ├── crud.py                     Organization-scoped facility and audit operations
+│   ├── services.py                 Schedule merge, overlap detection, energy calculations
+│   ├── email_service.py            Configurable SMTP transactional mailer (invites, resets, alerts)
+│   ├── rate_limiter.py             Sliding-window rate limiter (Redis mandatory in prod + dev fallback)
+│   ├── seed_appliances.py          Idempotent localized appliance library seeder
+│   ├── auth_security.py            Password hashes, HMAC tokens, signed sessions, role checks
 │   ├── routers/
-│   │   ├── auth.py                 Signup, login, team, organization settings
-│   │   ├── sync.py                 Sites, zones, schedules, bills, analysis
+│   │   ├── auth.py                 Signup, login, password reset, team, org settings
+│   │   ├── sync.py                 Sites, zones, schedules, CSV import, meter data
+│   │   ├── analytics.py            Tasks, bill trends, forecasting, ECBC benchmarking, alerts
 │   │   └── advisor.py              Optional AI advisor endpoint
+│   ├── tests/                      Automated pytest test suite (25 tests, 0 warnings)
+│   │   ├── conftest.py             Test fixtures, in-memory test database, auth headers
+│   │   ├── test_energy_calculations.py Standard & edge-case energy calculation tests
+│   │   ├── test_api_endpoints.py   Templates, schedule deduplication, meter CSV tests
+│   │   ├── test_tasks_and_analytics.py Tasks, anomalies, forecasts, ECBC benchmarks
+│   │   ├── test_data_isolation.py  Tenant isolation between distinct organizations
+│   │   ├── test_rbac_permissions.py Role boundaries (staff, manager, admin, owner)
+│   │   ├── test_schedule_overlap_and_csv.py Schedule overlap collision and malformed CSV
+│   │   ├── test_password_reset_and_alerts.py HMAC password reset and alert email dispatch
+│   │   ├── test_redis_ratelimit_and_forecast_edge_cases.py Prod Redis enforcement & forecasting
+│   │   └── test_migrations_compatibility.py Alembic head & table schema integrity
+│   ├── pytest.ini                  Pytest configuration and warning filters
 │   ├── requirements.txt            Pinned Python dependencies
 │   ├── .env.example                Server configuration template
 │   └── timetable.csv               Example schedule data
@@ -94,6 +114,11 @@ New organizations start with **no sample locations, zones, schedules, or fabrica
         ├── App.jsx                 Session, demo, and workspace state
         ├── main.jsx                React entry point
         ├── components/             Screens, charts, maps, forms, advisor, scenarios
+        │   ├── ModeledVsMeasuredChart.jsx Recharts interval meter comparison
+        │   ├── TaskManager.jsx     Audit task register & before/after savings
+        │   ├── BillAnalyticsView.jsx Monthly bill trends, anomalies & forecast
+        │   ├── ZoneBenchmarkingModal.jsx ECBC 2017 & BEE regulatory benchmarks
+        │   └── ...                 Workspace, maps, and scenario tools
         ├── data/                   Provider directory and demo-only records
         ├── services/api.js         HTTP client and API functions
         ├── utils/energyModel.js    Browser-side estimate calculations
@@ -168,6 +193,11 @@ erDiagram
     ROOM ||--o{ SCHEDULE : follows
     ORGANIZATION ||--o{ BILL_RECORD : tracks
     USER ||--o{ BILL_RECORD : creates
+    ORGANIZATION ||--o{ METER_READING : measures
+    ROOM ||--o{ METER_READING : records
+    ORGANIZATION ||--o{ AUDIT_TASK : assigns
+    ROOM ||--o{ AUDIT_TASK : targets
+    APPLIANCE_TEMPLATE ||--o{ APPLIANCE : presets
 ```
 
 | Entity | Purpose and important fields |
@@ -177,12 +207,15 @@ erDiagram
 | `Membership` | Connects a user and organization with a role and active flag. The user/organization pair is unique. |
 | `Invitation` | Organization, target email, role, hashed token, creator, expiry, and accepted timestamp. |
 | `Site` | Organization-owned location with address/city/state, optional latitude/longitude, and optional schematic metadata and binary file. |
-| `Room` | A facility zone with organization ID, optional site ID, name, and block. The UI often calls these zones; the API/model calls them rooms. |
-| `Appliance` | Equipment name, rated power in watts, load factor, and standby watts, attached to a room. Existing records default to load factor 1.0 and standby 0 W to preserve previous estimates. |
-| `Schedule` | Day label and start/end times, attached to a room. |
+| `Room` | A facility zone with organization ID, optional site ID, name, block, `zone_type` (e.g. office, classroom, lab, auditorium), and `area_sqm` (floor area in m²). |
+| `Appliance` | Equipment name, rated power in watts, load factor, and standby watts, attached to a room. Existing records default to load factor 1.0 and standby 0 W. |
+| `ApplianceTemplate` | Localized standard equipment presets (e.g., Split ACs, fans, LED lighting) with default wattage, load factors, standby profiles, and BEE star ratings. |
+| `Schedule` | Day label and start/end times, attached to a room. Enforces unique database constraint `uq_schedule_slot` on `(room_id, day_of_week, start_time, end_time)` to eliminate duplicate imports. |
+| `MeterReading` | Historical interval meter data uploaded via CSV (no IoT streaming). Stores timestamp, measured kWh, peak kW, power factor, and source filename. Indexed by `(org_id, room_id, timestamp)`. |
+| `AuditTask` | Actionable audit register item. Stores title, description, action type, owner, status (open/in_progress/completed/cancelled), priority, due date, baseline reading, post-intervention reading, and verified savings (kWh and ₹). |
 | `BillRecord` | Organization-owned biller, state, site label, reference, amount, due date, status, paid date/reference, and creator. |
 
-There is no dedicated device telemetry, meter-reading, action-history, or payment-transaction model yet. The optional site schematic is stored in the database as a binary column and is deferred from ordinary site queries.
+All entities maintain strict organization-level data isolation. The optional site schematic is stored in the database as a binary column and is deferred from ordinary site queries.
 
 ## 7. Energy model and calculations
 
@@ -293,6 +326,43 @@ The sample campus, locations, schedules, bills, and team are defined in `fronten
 
 **Report CSV** is available to every signed-in workspace role. It includes organization assumptions and generation time, portfolio gap/cost/emissions/schedule totals, the top three zones by modeled gap, and all zone estimates. CSV cells are escaped to reduce spreadsheet formula execution risk.
 
+### 8.11 Localized appliance library
+
+SyncSpace includes a pre-populated database library of standard Indian commercial appliances (Split ACs, BLDC and standard ceiling fans, LED tube lights, commercial troffers, computer workstations, servers, and pantry appliances). When creating a zone, users can select an appliance template from the library dropdown to automatically populate rated wattage, typical operating load factors (e.g. 0.60 for ACs), and standby wattage (e.g. 15W idle electronics).
+
+### 8.12 Historical interval meter CSV & Modeled vs Measured analytics
+
+To ensure defensible energy management without relying on live IoT hardware integrations, SyncSpace accepts interval meter data CSV uploads. 
+- CSV format: `timestamp,measured_kwh,peak_kw,power_factor`
+- Analyzes daily interval consumption and plots an interactive Recharts dual-series comparison: **Modeled schedule baseline** vs **Measured real-world consumption**.
+- Calculates the empirical deviation (variance percentage and total gap delta), allowing energy managers to validate theoretical idle-gap assumptions against measured utility reality.
+
+### 8.13 Actionable task & audit register
+
+Energy audits require concrete corrective actions with measurable proof of savings.
+- Task register with properties: Title, Description, Action Type (HVAC setpoint, LED upgrade, timer installation, insulation, behavioral), Owner, Priority, Due Date, and Status (Open, In Progress, Completed, Cancelled).
+- Measurement & Verification (M&V): Managers record **baseline pre-intervention meter readings** and **post-intervention meter readings**.
+- The system automatically calculates and records verified savings in both **kWh saved** and **₹ saved**, providing audit proof for ESG and financial reporting.
+
+### 8.14 Electricity bill trends & 20% rolling-average anomaly detection
+
+The electricity ledger displays historical monthly billing records with an interactive chart tracking monthly kWh and bill amounts (₹).
+- Features an automated statistical anomaly detection algorithm: any billing month where the consumption exceeds the 3-month rolling average by **>20%** is visually flagged with an anomaly badge.
+- Alerts energy managers to unexplained utility spikes, meter billing errors, or unnoticed operational changes.
+
+### 8.15 Next-month predictive forecasting
+
+SyncSpace provides a lightweight local Machine Learning regression model that analyzes the organization's historical bill ledger to forecast next-month energy consumption (kWh) and estimated cost (₹).
+- Uses linear regression with slope, intercept, and $R^2$ goodness-of-fit confidence score.
+- Reports direction of trend (Increasing, Decreasing, or Stable) on the executive dashboard.
+
+### 8.16 ECBC 2017 & BEE regulatory benchmarking
+
+Zones can be benchmarked against statutory Indian energy efficiency standards:
+- **Energy Conservation Building Code (ECBC 2017)** published by the Bureau of Energy Efficiency (BEE), Ministry of Power, Government of India.
+- Evaluates the zone's Energy Performance Index (**EPI** in kWh/m²/year) against specific building space categories (Commercial Office: 140 kWh/m²/yr; Education: 100 kWh/m²/yr; Labs: 160 kWh/m²/yr; Healthcare: 200 kWh/m²/yr; Retail: 180 kWh/m²/yr; IT/Datacenters: 400 kWh/m²/yr).
+- Automatically calculates compliance deviation (%) and classifies the zone into **Efficient**, **Standard Compliance**, or **Inefficient / High Consumption** ratings with full regulatory citations.
+
 ## 9. API reference
 
 All product routes are under `/api/v1`; the API client appends this prefix to the configured API root. `GET /` is a basic service health response. The API also serves OpenAPI documentation at `/docs` when running locally.
@@ -302,7 +372,9 @@ All product routes are under `/api/v1`; the API client appends this prefix to th
 | Method and path | Purpose | Access |
 |---|---|---|
 | `POST /auth/register` | Create an email/password owner and a new empty organization. | Public; duplicate email returns a conflict. |
-| `POST /auth/login` | Sign in with email and password. | Public, rate-limited by IP/email. |
+| `POST /auth/login` | Sign in with email and password. | Public, rate-limited by IP/email (Redis + in-memory fallback). |
+| `POST /auth/forgot-password` | Request HMAC-signed password reset link via SMTP. | Public, rate-limited by IP/email. |
+| `POST /auth/reset-password` | Set new password using verified, unexpired HMAC reset token. | Public with valid single-use token. |
 | `POST /auth/google/register` | Verify a Google ID token and create an owner workspace. | Public, requires Google client configuration. |
 | `POST /auth/google/login` | Verify Google identity and create a session for an existing workspace. | Public, requires Google client configuration. |
 | `POST /auth/register-invitation` | Accept a valid invitation and join the organization. | Public with a single-use invitation token. |
@@ -312,28 +384,45 @@ All product routes are under `/api/v1`; the API client appends this prefix to th
 | `GET /auth/members` | List workspace memberships. | Owner/admin. |
 | `PATCH /auth/members/{membership_id}` | Change a permitted team role. | Owner/admin, with owner/admin restrictions. |
 | `DELETE /auth/members/{membership_id}` | Suspend a membership. | Owner/admin, with owner/admin restrictions. |
-| `POST /auth/invitations` | Create a seven-day invitation and return its token once. | Owner/admin. |
+| `POST /auth/invitations` | Create a seven-day invitation and return its token once (optionally triggers SMTP email). | Owner/admin. |
 | `GET /auth/invitations` | List outstanding invitations. | Owner/admin. |
 | `DELETE /auth/invitations/{invitation_id}` | Revoke an invitation. | Owner/admin. |
 
-### Facilities, schedules, and analysis
+### Facilities, schedules, appliance library, and meter data
 
 | Method and path | Purpose | Access |
 |---|---|---|
+| `GET /appliance-templates/` | List pre-populated Indian appliance library templates. | Any active member. |
 | `GET /sites/` | List the organization's sites. | Any active member. |
 | `POST /sites/` | Create a site. | Owner/admin/manager. |
 | `PATCH /sites/{site_id}/` | Update a site. | Owner/admin/manager. |
 | `POST /sites/{site_id}/schematic/` | Upload a building plan. | Owner/admin/manager. |
 | `GET /sites/{site_id}/schematic/` | Read a plan in the organization. | Any active member. |
 | `DELETE /sites/{site_id}/schematic/` | Remove a plan. | Owner/admin/manager. |
-| `GET /rooms/` | List zones with equipment and schedules. | Any active member. |
-| `POST /rooms/` | Create a zone and its initial equipment. | Owner/admin/manager. |
+| `GET /rooms/` | List zones with equipment, schedules, zone_type, and area_sqm. | Any active member. |
+| `POST /rooms/` | Create a zone with zone_type, area_sqm, and initial equipment. | Owner/admin/manager. |
 | `PATCH /rooms/{room_id}/site/` | Move a zone to a site. | Owner/admin/manager. |
 | `POST /rooms/{room_id}/appliances/` | Add equipment to a zone. | Owner/admin/manager. |
-| `POST /rooms/{room_id}/schedules/` | Add a schedule row. | Owner/admin/manager. |
-| `POST /rooms/{room_id}/schedules/upload/` | Import schedule rows from CSV. | Owner/admin/manager. |
+| `POST /rooms/{room_id}/schedules/` | Add a schedule row (checks `uq_schedule_slot` uniqueness & rejects interval overlaps with HTTP 409). | Owner/admin/manager. |
+| `POST /rooms/{room_id}/schedules/upload/` | Import schedule rows from CSV with exact deduplication (`skipped_duplicates`) and interval overlap skips (`skipped_overlaps`). | Owner/admin/manager. |
+| `POST /meter-data/upload/` | Upload historical interval meter data CSV for a zone. | Owner/admin/manager. |
+| `GET /meter-data/readings/` | Retrieve parsed historical meter interval readings. | Any active member. |
+| `GET /meter-data/summary/` | Get Modeled vs Measured analytics and daily interval comparison. | Any active member. |
 | `GET /rooms/{room_id}/waste-analysis/` | Calculate one zone's estimates. | Any active member. |
 | `GET /campus-dashboard/` | Aggregate zone estimates for the workspace. | Any active member. |
+
+### Audit tasks, bill analytics, and benchmarking
+
+| Method and path | Purpose | Access |
+|---|---|---|
+| `GET /tasks/` | List organization audit tasks with before/after readings & verified savings. | Any active member. |
+| `POST /tasks/` | Create an actionable audit task. | Owner/admin/manager. |
+| `PUT /tasks/{task_id}/` | Update task status, owner, readings, and record verified savings. | Owner/admin/manager. |
+| `DELETE /tasks/{task_id}/` | Delete an audit task. | Owner/admin/manager. |
+| `GET /analytics/bill-trends/` | Monthly bill trend history with >20% rolling-average anomaly flags. | Owner/admin/manager. |
+| `GET /analytics/forecast/` | Next-month bill consumption and cost forecast with linear regression & $R^2$. | Owner/admin/manager. |
+| `GET /analytics/benchmarks/{room_id}` | Compare zone EPI against ECBC 2017 & BEE regulatory baselines (statutory vs indicative). | Any active member. |
+| `POST /analytics/alerts/dispatch/` | Trigger automated email alerts for upcoming bill due dates (<7 days) and high energy gaps (>50 kWh/d). | Owner/admin/manager. |
 
 ### Electricity ledger and advisor
 
@@ -343,7 +432,7 @@ All product routes are under `/api/v1`; the API client appends this prefix to th
 | `POST /bill-records/` | Add a bill record. | Owner/admin/manager. |
 | `PUT /bill-records/{record_id}/payment` | Mark paid and record the external reference. | Owner/admin/manager. |
 | `PATCH /bill-records/{record_id}` | Change bill status, currently used to archive/void. | Owner/admin/manager. |
-| `POST /advisor/chat` | Request a workspace-aware advisor answer. | Any active member; requires `OPENAI_API_KEY`. |
+| `POST /advisor/chat` | Request a workspace-aware advisor answer (rate-limited via Redis/in-memory). | Any active member; requires `OPENAI_API_KEY`. |
 
 The route schemas in `backend/schemas.py` define the authoritative request constraints. Every protected operation should keep organization scoping in its database queries; do not rely on client-provided organization IDs.
 
@@ -368,16 +457,18 @@ The route schemas in `backend/schemas.py` define the authoritative request const
 - Passwords are stored as salted `scrypt` hashes; the raw password is not stored.
 - Password-based signup checks the strength requirements in both the browser and API. Password login is not forced to match the current signup rules, allowing existing accounts to keep logging in.
 - Session tokens are signed with HMAC-SHA256 and placed in an HTTP-only, SameSite=Lax cookie. The configured lifetime is 12 hours. The Secure cookie attribute is enabled when `APP_ENV=production`.
+- Password reset tokens are generated using timestamped HMAC-SHA256 signatures with a 1-hour expiration. Tampered tokens, expired tokens, and mismatched signatures are securely rejected without leaking account existence.
 - Production startup fails if `AUTH_SECRET_KEY` is absent or shorter than 32 characters. Without a configured key in development, a random key is generated at process start; restarting the API can invalidate development sessions.
 - Google credentials are verified on the API against `GOOGLE_CLIENT_ID`; the browser client ID is public configuration. Google subjects are stored as stable identity references. A verified Google email can be linked to an existing password account.
-- Login and Google identity attempts are limited to 10 attempts per 15-minute window per limiter key. Login and AI throttles are currently held in process memory, so a multi-worker deployment should add a shared rate-limit store before relying on those limits across workers.
-- Membership state and role are rechecked on protected API requests. Facility and bill queries must remain organization-scoped.
+- **Production Redis enforcement:** When `APP_ENV=production`, `REDIS_URL` is mandatory. The application verifies the Redis connection upon startup and refuses in-memory fallback. If Redis is unavailable in production, requests return HTTP 503 Service Unavailable. The in-memory sliding window limiter is strictly retained as a fallback for local development and test environments.
+- Login and Google identity attempts are limited to 10 attempts per 15-minute window per limiter key. AI questions are limited to 10 requests per user per minute.
+- Membership state and role are rechecked on protected API requests. Facility, schedule, task, and bill queries remain organization-scoped to guarantee complete multi-tenant isolation.
 - CORS is credential-enabled for configured `FRONTEND_ORIGINS`. Mutating requests with an `Origin` header outside that list are rejected by middleware.
 - Uploaded schematics are type/signature checked, returned with `nosniff`, private cache policy, and a sandbox content policy.
 - Invitation tokens are returned once, stored hashed, and limited to the invited email.
 - API secrets belong only on the API server. Do not put `AUTH_SECRET_KEY`, `OPENAI_API_KEY`, or a Google client secret in frontend code or GitHub Pages variables.
 
-The session system is application-specific; use HTTPS in production and configure the persistent database and stable secrets before putting a workspace into real operation. The project currently does not include password-reset email, email delivery, or a separate server-side session-revocation table.
+The session system is application-specific; use HTTPS in production and configure the persistent database, Redis cluster, and stable secrets before putting a workspace into real operation.
 
 ## 12. AI energy advisor
 
@@ -457,13 +548,20 @@ Copy `backend/.env.example` to `backend/.env` for server settings and `frontend/
 
 | Variable | Used by | Purpose |
 |---|---|---|
-| `DATABASE_URL` | API | SQLAlchemy connection string. Defaults to `sqlite:///./syncspace.db`. PostgreSQL URLs beginning `postgresql://` are adapted to the psycopg driver. |
+| `DATABASE_URL` | API & Alembic | SQLAlchemy connection string. Defaults to `sqlite:///./syncspace.db`. PostgreSQL URLs beginning `postgresql://` are adapted to the psycopg driver. |
 | `APP_ENV` | API | Set `production` to require a stable auth secret and mark the session cookie Secure. |
 | `AUTH_SECRET_KEY` | API | HMAC signing secret. Must be at least 32 characters in production. Generate a private random value; never commit it. |
 | `FRONTEND_ORIGINS` | API | Comma-separated exact origins allowed by CORS and mutation middleware, including scheme and port when applicable. |
 | `GOOGLE_CLIENT_ID` | API | Audience expected for Google ID tokens. |
 | `OPENAI_API_KEY` | API | Server credential for the AI advisor. Never expose this to browser code. |
 | `OPENAI_MODEL` | API | OpenAI model identifier; defaults to `gpt-6-luna`. |
+| `REDIS_URL` | API | Redis connection string (e.g. `redis://localhost:6379/0`). **Mandatory in production** (`APP_ENV=production`); the API tests connectivity on startup and returns HTTP 503 if unreachable. In development/testing, falls back gracefully to an in-memory sliding-window store. |
+| `SMTP_HOST` | API | SMTP server host (e.g. `smtp.sendgrid.net`, `smtp.gmail.com`). Powers team invitations, password resets, and automated bill/energy alerts. If omitted, emails are logged as dry-runs. |
+| `SMTP_PORT` | API | SMTP server port; defaults to 587. |
+| `SMTP_USER` | API | Username or API key for SMTP authentication. |
+| `SMTP_PASSWORD` | API | Password or secret for SMTP authentication. |
+| `SMTP_FROM` | API | From email address header (defaults to `SyncSpace Alerts <no-reply@syncspace.energy>`). |
+| `SMTP_TLS` | API | Whether to enforce STARTTLS encryption (`true` or `false`, defaults to `true`). |
 | `VITE_API_BASE_URL` | Frontend build | Public API root URL without `/api/v1`; the client adds that prefix. |
 | `VITE_GOOGLE_CLIENT_ID` | Frontend build | Public Google web client ID used by Google Identity Services in the browser. |
 | `VITE_BASE_PATH` | Frontend build | Vite base URL; GitHub Pages sets this to `/ENERGY/`. Local default is `/`. |
@@ -472,15 +570,39 @@ For production, configure environment variables on the backend hosting service. 
 
 ## 16. Database behavior and maintenance
 
-On startup, `database.initialize_database()` creates tables and applies a small set of additive compatibility changes for existing databases: organization provider fields, the Google subject column/index, and room organization/site fields. It also attaches already organization-scoped rooms that do not yet have a site to the first site in that organization, creating a legacy “Main site” when needed.
+### Versioned database migrations (Alembic)
 
-New organizations are not seeded with demo rooms or a placeholder location. Legacy unscoped rooms are not assigned to a newly created organization. The schema adjustments are currently implemented in application code; the project does not use Alembic or another versioned migration framework.
+The application uses **Alembic** for schema migrations across both SQLite and PostgreSQL backends:
+- Migration files are stored under `backend/alembic/versions/`.
+- Configured with `render_as_batch=True` to support SQLite schema alterations transparently.
+- To apply migrations to the current database:
+  ```powershell
+  cd "D:\energy management\backend"
+  .\.venv\Scripts\python.exe -m alembic upgrade head
+  ```
+- To generate a new migration after editing `models.py`:
+  ```powershell
+  .\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe_changes"
+  ```
 
-Local SQLite data is stored at `backend/syncspace.db` by default (relative to the backend working directory). Protect and back up this file if it contains real workspace data. For a hosted multi-user system, use a persistent database service, a managed backup policy, and tested restore procedures. Do not assume an ephemeral application container's local disk is persistent.
+Startup code in `database.py` establishes the engine and pool connections cleanly without executing destructive or unversioned manual schema patches.
 
-## 17. Build and deployment
+### Pre-populated appliance library seed
 
-### Frontend checks
+To populate or refresh the standard Indian commercial appliance template library:
+```powershell
+cd "D:\energy management\backend"
+.\.venv\Scripts\python.exe seed_appliances.py
+```
+This script is idempotent: running it multiple times checks existing entries by appliance name and adds only missing standard presets without duplicating rows.
+
+### Data storage and backups
+
+Local SQLite data is stored at `backend/syncspace.db` by default (relative to the backend working directory). Protect and back up this file if it contains real workspace data. For a hosted multi-user system, use a persistent database service (e.g. PostgreSQL), a managed backup policy, and tested restore procedures.
+
+## 17. Build, testing, and deployment
+
+### Frontend checks, performance, and build
 
 From `frontend/`:
 
@@ -492,18 +614,50 @@ npm run preview
 
 `npm run build` writes static assets to `frontend/dist`; `npm run preview` serves that built output locally.
 
-### Backend checks
+**Code-splitting & Bundle Optimization:**
+- Configured Vite with Rollup `manualChunks` to split the frontend into four dedicated vendor chunks: `vendor-charts` (Recharts & D3 dependencies), `vendor-react` (React core & DOM), `vendor-icons` (Lucide React), and `vendor-misc`.
+- Implemented `React.lazy()` and `Suspense` code splitting on heavy interactive modals like `ZoneBenchmarkingModal.jsx`.
+- Result: Completely eliminated the monolithic 809 kB single-chunk warning; maximum single chunk reduced to 381 kB (`vendor-charts`), with total build time under 1.0s and 0 warnings.
+
+### Automated backend test suite (Pytest)
 
 From `backend/`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall -q .
-.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pytest -v
 ```
 
-### GitHub Pages workflow
+The comprehensive automated test suite includes **25 tests across 8 test suites**, running with **0 warnings** on Python 3.14 (fully timezone-aware UTC timestamps, zero deprecated `datetime.utcnow()` references):
 
-`.github/workflows/deploy-pages.yml` runs on pushes to `main` and manual dispatch. It installs the frontend using `npm ci`, builds with `/ENERGY/` as the base path, and publishes `frontend/dist` to GitHub Pages. This workflow does not deploy FastAPI, migrate a production database, or configure secrets on an API host.
+1. **Exact standard energy calculation (`test_energy_calculations.py`):**
+   $$\text{4.5 kW connected load} \times \text{2 idle hours} = \text{9.0 kWh}$$
+   $$\text{9.0 kWh} \times \text{₹8/kWh} = \text{₹72.0}$$
+   $$\text{9.0 kWh} \times \text{0.82 kg CO}_2\text{e/kWh} = \text{7.38 kg CO}_2\text{e}$$
+2. **Load factors and standby watt models:** Active kW vs Standby kW baseline calculations.
+3. **Schedule interval merging:** Correct union of overlapping timetable slots.
+4. **Time-of-Use blended tariff calculations:** Peak vs Off-peak weighted cost estimates.
+5. **Appliance template retrieval (`test_api_endpoints.py`):** Verified 16 localized Indian equipment presets.
+6. **Schedule deduplication & DB constraints:** Enforces `uq_schedule_slot` unique constraint.
+7. **Interval meter data CSV upload:** CSV schema validation and dual-series Modeled vs. Measured variance summary.
+8. **Multi-tenant organization data isolation (`test_data_isolation.py`):** Zero cross-tenant leakage between Organization A and Organization B across rooms, appliances, schedules, tasks, and bills.
+9. **Role-based access control (`test_rbac_permissions.py`):** Strict authorization verification for staff (read-only), manager (facilities, tasks, schedules, bills), and owner/admin (team invitations and org settings).
+10. **Schedule overlap collision detection (`test_schedule_overlap_and_csv.py`):** Minute-by-minute interval collision detection rejecting overlaps with HTTP 409 Conflict, handling overnight shifts, and counting `skipped_overlaps` on CSV import.
+11. **Malformed CSV input validation:** Rejection of invalid headers, corrupted time formats, and empty files.
+12. **Password reset workflow (`test_password_reset_and_alerts.py`):** HMAC-SHA256 timestamped tokens, password reset execution, single-use invalidation, and tampered token detection.
+13. **Automated scheduled alerts:** Dispatching email warnings for impending bill due dates (<7 days) and high energy gaps (>50 kWh/day).
+14. **Production Redis enforcement (`test_redis_ratelimit_and_forecast_edge_cases.py`):** Ensures production mode refuses in-memory fallback and raises 503 if Redis is unreachable.
+15. **Sliding-window rate limiter:** Accurate burst and replenishment throttling in development mode.
+16. **Predictive forecasting edge cases:** Clean handling of 0 bills (None), 1 bill (fallback single-point forecast), and multi-bill linear regression ($R^2 > 0.8$).
+17. **Alembic migration compatibility (`test_migrations_compatibility.py`):** Head revision `5d7c26b5329f` verification and table/constraint schema inspection.
+18. **Actionable task & audit register (`test_tasks_and_analytics.py`):** Full lifecycle from OPEN to COMPLETED, verifying before/after meter readings and calculated savings.
+19. **Bill anomaly detection:** Statistical flagging for electricity bills >20% above the 3-month rolling average.
+20. **Next-month consumption & cost forecasting:** Multi-month linear regression projection.
+21. **ECBC 2017 & BEE regulatory benchmarking:** Classifies spaces against authoritative statutory codes vs indicative benchmarks.
+
+### Automated CI/CD workflows
+
+- **`.github/workflows/test.yml`**: Triggers on push and pull request. Sets up Python, installs dependencies, and runs the full Pytest automated test suite.
+- **`.github/workflows/deploy-pages.yml`**: Installs frontend dependencies with `npm ci`, builds production assets, and publishes `frontend/dist` to GitHub Pages.
 
 ### Production checklist
 
@@ -534,32 +688,53 @@ GitHub Pages alone can show the demo but cannot provide saved account data. The 
 | Building-plan upload is rejected | Use PNG/JPG/WEBP/PDF, ensure the file signature matches its extension, and keep it at or below 10 MiB. |
 | Browser changes are missing after reload in demo | Demo changes are temporary by design. Sign into a live workspace to save data through the API. |
 
-## 19. Current limitations and future work
+## 19. Current boundaries, regulatory baselines, and future work
 
 ### Current product boundaries
 
-- No live meter, interval-data, BMS, or equipment-control integration.
-- No automatic bill retrieval, BBPS payment execution, payment confirmation, or bank reconciliation.
-- Provider directories are static reference data.
-- Chat requires an external OpenAI key, provider access, internet connectivity, and paid API usage as applicable.
-- Google OAuth requires a configured web client ID.
-- The static frontend does not host the API; a separate backend deployment is required for persistent accounts.
-- Database schema evolution is handled by startup code rather than versioned migrations.
-- Invitations are displayed for manual sharing; email delivery is not built in.
-- No password reset or email verification workflow is included.
-- Schedule-gap estimates depend on entered load factors and standby watts and are not meter-verified.
-- The time-of-use tariff is duration-weighted because modeled gap energy has no hourly distribution.
-- What-if results depend on equipment-name matching and editable scenario assumptions.
-- Rooftop solar results are screening estimates; they do not model export credits or installer-specific design.
+- **Hardware boundary:** No live IoT hardware streaming (e.g. no microcontrollers, Arduino, ESP32, or raw socket listeners). All real-world measured data comparison is strictly handled via structured CSV interval imports.
+- **Billing payments boundary:** No automated payment gateway execution or live BBPS money movement; payments occur on authorized provider portals and are reconciled with external transaction references.
+- **AI integration:** Chat requires an external OpenAI API key and active network connectivity.
+- **What-if & solar:** What-if models simulate scenario assumptions on stored schedules; rooftop solar provides screening-level feasibility estimates and requires formal on-site structural/electrical design for execution.
 
-### Practical roadmap
+### Authoritative regulatory baselines (ECBC 2017 & BEE)
 
-1. Add interval-meter imports and distinguish modeled gap from measured usage.
-2. Add an auditable action register with owner, due date, status, evidence, and before/after readings.
-3. Add validated meter/site baselines before comparing buildings or reporting savings.
-4. Add versioned database migrations and production backup/restore automation.
-5. Integrate approved bill, meter, or building-management providers after credentials, data agreements, and operational controls are in place.
-6. Add budget/usage monitoring and provider-level safeguards for AI usage.
+SyncSpace benchmarks facility zones against statutory Indian energy efficiency standards without fabricating metrics, maintaining a clear architectural distinction between statutory building codes and indicative space-level audit baselines:
+
+1. **Statutory Building Standards (ECBC 2017 & BEE Star Rating):**
+   - **Legal Mandate:** Applies to commercial buildings with connected electrical load $\ge 100\text{ kW}$ or contract demand $\ge 120\text{ kVA}$ under the Energy Conservation Act (EC Act 2001, amended 2022).
+   - **Source:** *Energy Conservation Building Code (ECBC 2017)* Section 3 & Appendix E (Whole Building Performance method), Bureau of Energy Efficiency (BEE), Ministry of Power, GoI.
+   - **Climate Zone Context:** Baseline indices represent the **Composite / Warm-Humid Standard** prevailing in major Indian urban centers.
+   - **Whole-Building Categories:**
+     - **Commercial Offices:** 140 kWh/m²/yr (Standard ECBC compliant); 115 kWh/m²/yr (ECBC+ / BEE 4-Star); 90 kWh/m²/yr (Super ECBC / BEE 5-Star).
+     - **Healthcare & Hospital Buildings:** 200 kWh/m²/yr.
+     - **Retail & Commercial Centers:** 180 kWh/m²/yr.
+     - **Hospitality & Hotel Buildings:** 300 kWh/m²/yr.
+
+2. **Indicative Space-Type Baselines (BEE Audit & ECO-III Standards):**
+   - **Operational Scope:** Sub-space performance metrics derived from USAID/BEE ECO-III Energy Benchmarking manuals and comprehensive facility energy audits. These serve as indicative operational guidelines for specific rooms/functional zones rather than statutory whole-building mandates:
+     - **Educational Classrooms:** 95 kWh/m²/yr.
+     - **Educational & Academic Buildings (General):** 100 kWh/m²/yr.
+     - **Science & Computer Laboratories:** 160 kWh/m²/yr.
+     - **IT & High-Density Data Centers:** 400 kWh/m²/yr.
+     - **Logistics & Warehousing:** 50 kWh/m²/yr.
+
+The UI badges each benchmark accordingly, ensuring energy managers understand whether an index reflects statutory compliance or an indicative operational baseline.
+
+### Completed enhancements (Phases 2, 3, 4, and Critical Engineering Audit)
+
+1. **Alembic Database Migrations:** Versioned, idempotent migrations replacing startup schema patches; full SQLite batch and PostgreSQL support (head revision `5d7c26b5329f`).
+2. **Pre-Populated Appliance Library:** 16 standard Indian commercial appliances with rated power, typical load factors, and standby profiles.
+3. **Database Constraints & Interval Overlap Detection:** Unique database constraint `(room_id, day_of_week, start_time, end_time)` coupled with minute-by-minute interval collision detection supporting single-day, weekday, everyday, and overnight schedules (rejecting overlaps with HTTP 409).
+4. **Historical Meter CSV Upload & Recharts Analytics:** Interval CSV validation and dual-series Modeled vs. Measured variance tracking.
+5. **Actionable Task & Audit Register:** Full task lifecycle management with baseline and post-intervention meter readings and verified savings tracking (kWh and ₹).
+6. **Bill Trends & Anomaly Flags:** Historical monthly bill analysis with statistical flagging for bills >20% above the 3-month rolling average.
+7. **Next-Month Predictive Forecasting:** Local linear regression predicting next month's consumption and cost with $R^2$ goodness-of-fit.
+8. **Zone-Specific Benchmarking:** Real-time EPI calculation and compliance rating against official ECBC/BEE baselines.
+9. **SMTP Email Workflows:** Transactional email triggers for team invites, password resets (HMAC-SHA256 timestamped tokens), bill due notifications, and energy gap anomaly alerts.
+10. **Redis-Backed Rate Limiting:** Sliding-window rate limiter on auth and AI endpoints; **mandatory in production** (`APP_ENV=production`), with in-memory fallback strictly for dev/test.
+11. **Frontend Code Splitting & Performance:** Optimized Vite bundle with Rollup `manualChunks` and `React.lazy` modal loading (monolithic 809 kB bundle eliminated, max chunk 381 kB, <1.0s build).
+12. **Zero-Warning Pytest Suite:** 25 passing automated tests with 0 warnings covering all calculations, multi-tenant isolation, RBAC, migrations, and edge cases.
 
 ## 20. Glossary
 

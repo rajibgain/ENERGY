@@ -97,4 +97,29 @@ export const createBillRecord = async (payload) => mapBill((await API.post('/bil
 export const recordBillPayment = async (id, paymentReference) => mapBill((await API.put(`/bill-records/${id}/payment`, { payment_reference: paymentReference })).data);
 export const archiveBillRecord = async (id) => mapBill((await API.patch(`/bill-records/${id}`, { status: 'void' })).data);
 
+// ── Phase 2 & 3: Library, Meter, Tasks, Benchmarks & Analytics ─────────────
+
+export const fetchApplianceTemplates = async () => (await API.get('/appliance-templates/')).data;
+
+export const uploadMeterCSV = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return (await API.post('/meter-data/upload/', formData)).data;
+};
+
+export const fetchMeterSummary = async () => (await API.get('/meter-data/summary/')).data;
+export const fetchMeterReadings = async (roomId = null) => (await API.get('/meter-data/readings/', { params: roomId ? { room_id: roomId } : {} })).data;
+
+export const fetchTasks = async (status = 'all') => (await API.get('/tasks/', { params: { status } })).data;
+export const createTask = async (payload) => (await API.post('/tasks/', payload)).data;
+export const updateTask = async (id, payload) => (await API.patch(`/tasks/${id}`, payload)).data;
+export const deleteTask = async (id) => API.delete(`/tasks/${id}`);
+
+export const fetchBillTrends = async () => (await API.get('/analytics/bill-trends/')).data;
+export const fetchBillForecast = async () => (await API.get('/analytics/forecast/')).data;
+export const fetchZoneBenchmark = async (roomId, areaSqm = null, zoneType = null) => (await API.get(`/analytics/benchmarks/${roomId}`, { params: { area_sqm: areaSqm, zone_type: zoneType } })).data;
+export const requestPasswordReset = async (email) => (await API.post('/auth/forgot-password', { email })).data;
+export const resetPassword = async (token, newPassword) => (await API.post('/auth/reset-password', { token, new_password: newPassword })).data;
+export const dispatchAlerts = async () => (await API.post('/analytics/alerts/dispatch/')).data;
+
 export default API;

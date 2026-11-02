@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -17,6 +18,10 @@ from sqlalchemy import (
 from sqlalchemy.orm import deferred, relationship
 
 from database import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Organization(Base):
@@ -36,7 +41,7 @@ class Organization(Base):
     operating_hours = Column(Float, nullable=False, default=8.0)
     bbps_partner = Column(String(80), nullable=False, default="Setu")
     payment_portal_url = Column(String(500), nullable=False, default="")
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
 
     memberships = relationship("Membership", back_populates="organization", cascade="all, delete-orphan")
 
@@ -59,7 +64,7 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)
     google_sub = Column(String(255), nullable=True, unique=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
 
     memberships = relationship("Membership", back_populates="user", cascade="all, delete-orphan")
 
@@ -76,7 +81,7 @@ class Membership(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String(20), nullable=False, default="staff")
     is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
 
     user = relationship("User", back_populates="memberships")
     organization = relationship("Organization", back_populates="memberships")
@@ -93,7 +98,7 @@ class Invitation(Base):
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     accepted_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
 
 
 class Site(Base):
@@ -126,6 +131,8 @@ class Room(Base):
     site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(120), nullable=False, index=True)
     block = Column(String(120), nullable=False)
+    zone_type = Column(String(60), nullable=False, default="general")
+    area_sqm = Column(Float, nullable=True)
 
     site = relationship("Site", back_populates="rooms")
     appliances = relationship("Appliance", back_populates="room", cascade="all, delete-orphan")
@@ -149,8 +156,25 @@ class Appliance(Base):
     room = relationship("Room", back_populates="appliances")
 
 
+class ApplianceTemplate(Base):
+    __tablename__ = "appliance_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(120), nullable=False, unique=True, index=True)
+    category = Column(String(60), nullable=False, default="General")
+    power_watts = Column(Float, nullable=False)
+    load_factor = Column(Float, nullable=False, default=1.0)
+    standby_watts = Column(Float, nullable=False, default=0.0)
+    region = Column(String(30), nullable=False, default="IN")
+    is_default = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+
+
 class Schedule(Base):
     __tablename__ = "schedules"
+    __table_args__ = (
+        UniqueConstraint("room_id", "day_of_week", "start_time", "end_time", name="uq_schedule_slot"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     room_id = Column(Integer, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -176,5 +200,44 @@ class BillRecord(Base):
     paid_date = Column(Date, nullable=True)
     payment_reference = Column(String(100), nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+    updated_at = Column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class MeterReading(Base):
+    __tablename__ = "meter_readings"
+    __table_args__ = (
+        Index("ix_meter_org_room_timestamp", "organization_id", "room_id", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    kwh_reading = Column(Float, nullable=False)
+    interval_minutes = Column(Integer, nullable=False, default=60)
+    source = Column(String(60), nullable=False, default="csv_upload")
+    uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    uploaded_at = Column(DateTime, nullable=False, default=utc_now)
+
+
+class AuditTask(Base):
+    __tablename__ = "audit_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    description = Column(String(1000), nullable=False, default="")
+    assigned_to = Column(String(120), nullable=True)
+    due_date = Column(Date, nullable=True)
+    status = Column(String(20), nullable=False, default="open")  # open, in_progress, completed, cancelled
+    priority = Column(String(20), nullable=False, default="medium")  # low, medium, high, critical
+    room_id = Column(Integer, ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True)
+    before_reading_kwh = Column(Float, nullable=True)
+    after_reading_kwh = Column(Float, nullable=True)
+    verified_savings_kwh = Column(Float, nullable=True)
+    verified_savings_inr = Column(Float, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+    updated_at = Column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)
+    completed_at = Column(DateTime, nullable=True)
